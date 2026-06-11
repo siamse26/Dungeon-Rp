@@ -18,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -126,7 +129,8 @@ fun DungeonGameApp(
                             onDescend = { viewModel.descendFloor() },
                             onBackToMenu = { viewModel.navigateTo("home") },
                             onOpenBackpack = { viewModel.navigateTo("inventory") },
-                            onOpenTravel = { viewModel.openTravelCodex() }
+                            onOpenTravel = { viewModel.openTravelCodex() },
+                            playerClass = p.characterClass
                         )
 
                         "inventory" -> InventoryScreen(
@@ -402,7 +406,12 @@ fun MainMenuScreen(
                                 colors = listOf(Color(0xFF251F35), GunmetalSurface)
                             )
                         )
-                )
+                ) {
+                    RetroAtmosphereSparks(
+                        modifier = Modifier.fillMaxSize(),
+                        particleColor = EmberGold
+                    )
+                }
 
                 Column(
                     modifier = Modifier.padding(24.dp),
@@ -875,7 +884,8 @@ fun DungeonExplorationScreen(
     onDescend: () -> Unit,
     onBackToMenu: () -> Unit,
     onOpenBackpack: () -> Unit,
-    onOpenTravel: () -> Unit
+    onOpenTravel: () -> Unit,
+    playerClass: String = "Knight"
 ) {
     if (dungeon == null) {
         Column(
@@ -902,6 +912,37 @@ fun DungeonExplorationScreen(
         return
     }
 
+    var activeTexturePack by remember { mutableStateOf(TexturePack.CLASSIC_CRYPT) }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "dungeon_anims")
+    val bobOffset by infiniteTransition.animateFloat(
+        initialValue = -2.5f,
+        targetValue = 2.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "player_bob"
+    )
+    val flickerAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(350, easing = FastOutLinearInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "torch_flicker"
+    )
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.9f,
+        targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "enemy_pulse"
+    )
+
     // Identify if player stands on Stairs down
     val isPlayerOnStairsDown = dungeon.grid[dungeon.playerRow][dungeon.playerCol].type == TileType.STAIRS_DOWN
     val isPlayerOnWaypoint = dungeon.grid[dungeon.playerRow][dungeon.playerCol].type == TileType.WAYPOINT
@@ -924,12 +965,34 @@ fun DungeonExplorationScreen(
                     2 -> "Sulfurous Inferno Abyss"
                     else -> "Celestial Aether Citadel"
                 }
-                Text(stageName.uppercase(), color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                Text(stageName.uppercase(), color = activeTexturePack.primaryColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
                 Text("Chamber Floor ${dungeon.floor} / 3", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = androidx.compose.ui.text.font.FontFamily.Serif)
+                Text("STYLE: ${activeTexturePack.displayName}", color = activeTexturePack.primaryColor.copy(alpha = 0.8f), fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
             }
 
             // Real-time Health Counter in HUD
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // CYCLE VISUAL TEXTURE PACKS (DYNAMIC CUSTOM STYLES)
+                IconButton(
+                    onClick = {
+                        val packs = TexturePack.values()
+                        val nextIndex = (packs.indexOf(activeTexturePack) + 1) % packs.size
+                        activeTexturePack = packs[nextIndex]
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(activeTexturePack.primaryColor.copy(0.15f))
+                        .size(34.dp)
+                        .testTag("cycle_texture_pack")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Palette,
+                        contentDescription = "Cycle Texture Pack",
+                        tint = activeTexturePack.primaryColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
                 // TRAVEL CODEX BUTTON
                 IconButton(
                     onClick = onOpenTravel,
@@ -964,7 +1027,7 @@ fun DungeonExplorationScreen(
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(12.dp)),
             color = Color(0xFF0F0B09),
-            border = BorderStroke(2.dp, Color(0xFF3E2D28))
+            border = BorderStroke(2.dp, activeTexturePack.primaryColor)
         ) {
             Box(modifier = Modifier.padding(8.dp)) {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -978,48 +1041,17 @@ fun DungeonExplorationScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
-                                        .padding(1.dp)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(
-                                            when {
-                                                !cell.isRevealed -> Color(0xFF070505) // Fog of war black
-                                                isPlayer -> Color(0x33FFB300) // player highlights amber
-                                                cell.type == TileType.WALL -> Color(0xFF1E1715) // heavy walls slate
-                                                cell.type == TileType.WAYPOINT -> Color(0xFF0F262E) // cosmic waypoint blue
-                                                else -> Color(0xFF2E2421) // walkable floor
-                                            }
-                                        ),
-                                    contentAlignment = Alignment.Center
                                 ) {
-                                    if (cell.isRevealed) {
-                                        when {
-                                            isPlayer -> {
-                                                Text("⚔️", fontSize = 14.sp)
-                                            }
-                                            cell.type == TileType.STAIRS_UP -> {
-                                                Text("🪜", fontSize = 13.sp)
-                                            }
-                                            cell.type == TileType.STAIRS_DOWN -> {
-                                                Text("🌀", fontSize = 14.sp)
-                                            }
-                                            cell.type == TileType.WAYPOINT -> {
-                                                Text("🌌", fontSize = 14.sp)
-                                            }
-                                            cell.type == TileType.CHEST -> {
-                                                Text("🎁", fontSize = 14.sp)
-                                            }
-                                            cell.type == TileType.TRAP -> {
-                                                Text("⚠️", fontSize = 12.sp)
-                                            }
-                                            cell.type == TileType.ENEMY -> {
-                                                Text("💀", fontSize = 14.sp)
-                                            }
-                                            cell.type == TileType.BOSS -> {
-                                                Text("👹", fontSize = 16.sp)
-                                            }
-                                            else -> {}
-                                        }
-                                    }
+                                    DungeonTileContent(
+                                        cell = cell,
+                                        isPlayer = isPlayer,
+                                        texturePack = activeTexturePack,
+                                        bobOffset = bobOffset,
+                                        flickerAlpha = flickerAlpha,
+                                        pulseScale = pulseScale,
+                                        playerClass = playerClass,
+                                        enemies = dungeon.enemies
+                                    )
                                 }
                             }
                         }
@@ -2039,6 +2071,16 @@ fun BattleOverlay(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                // Real-time custom clashing graphics and animations!
+                BattleClashGraphic(
+                    enemyEmoji = enemyEmojiForName(battleState.enemy.name),
+                    playerCurrentHp = battleState.playerCurrentHp,
+                    enemyCurrentHp = battleState.enemyCurrentHp,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 // Track boss phase visual markers
                 if (battleState.enemy.isBoss) {
                     Box(
@@ -2911,3 +2953,570 @@ fun TravelCodexOverlay(
         }
     }
 }
+
+// ==========================================
+// GRAPHICS, VISUAL TEXTURES & PIXEL PACKS
+// ==========================================
+
+enum class TexturePack(
+    val id: String,
+    val displayName: String,
+    val primaryColor: Color,
+    val secondaryColor: Color,
+    val wallColor: Color,
+    val floorColor: Color,
+    val waypointColor: Color,
+    val playerColor: Color,
+    val exitColor: Color,
+    val playerIcon: String = ""
+) {
+    CLASSIC_CRYPT(
+        id = "classic_crypt",
+        displayName = "Classic Crypt 🧱",
+        primaryColor = Color(0xFFC5A059), // EmberGold
+        secondaryColor = Color(0xFFC62828), // CrimsonRed
+        wallColor = Color(0xFF1E1715),
+        floorColor = Color(0xFF2E2421),
+        waypointColor = Color(0xFF0F262E),
+        playerColor = Color(0xFF33FFB3),
+        exitColor = Color(0xFF381F1A)
+    ),
+    NEON_SYNTH(
+        id = "neon_synth",
+        displayName = "Neon Cyber 👾",
+        primaryColor = Color(0xFFFF007F), // Neon Pink
+        secondaryColor = Color(0xFF00FFCC), // Cosmic Teal
+        wallColor = Color(0xFF100020),
+        floorColor = Color(0xFF03001E),
+        waypointColor = Color(0xFF1C003D),
+        playerColor = Color(0xFF00FFCC),
+        exitColor = Color(0xFF2C003D)
+    ),
+    ICE_SANCTUM(
+        id = "ice_sanctum",
+        displayName = "Frozen Glace ❄️",
+        primaryColor = Color(0xFF00B0FF), // Ice blue
+        secondaryColor = Color(0xFF80D8FF), // Accent white-blue
+        wallColor = Color(0xFF0D2530),
+        floorColor = Color(0xFF1B3B48),
+        waypointColor = Color(0xFF0E3140),
+        playerColor = Color(0xFFE0F7FA),
+        exitColor = Color(0xFF0C2B3A)
+    ),
+    TOXIC_WASTELAND(
+        id = "toxic_wasteland",
+        displayName = "Bio Sludge ☣️",
+        primaryColor = Color(0xFF76FF03), // Poison green
+        secondaryColor = Color(0xFFFFD600), // Radioactive yellow
+        wallColor = Color(0xFF1A2415),
+        floorColor = Color(0xFF2E3D25),
+        waypointColor = Color(0xFF1D2F1B),
+        playerColor = Color(0xFFB2FF59),
+        exitColor = Color(0xFF2A3A22)
+    ),
+    COBBLESTONE_CASTLE(
+        id = "cobble_castle",
+        displayName = "Cobble Castle 🏰",
+        primaryColor = Color(0xFF90A4AE),
+        secondaryColor = Color(0xFF37474F),
+        wallColor = Color(0xFF263238),
+        floorColor = Color(0xFF455A64),
+        waypointColor = Color(0xFF1C2D37),
+        playerColor = Color(0xFFECEFF1),
+        exitColor = Color(0xFF1A2327)
+    ),
+    VOLCANIC_MAGMA(
+        id = "volcanic_magma",
+        displayName = "Volcanic Magma 🌋",
+        primaryColor = Color(0xFFFF3D00),
+        secondaryColor = Color(0xFFFFEB3B),
+        wallColor = Color(0xFF120502),
+        floorColor = Color(0xFF210C07),
+        waypointColor = Color(0xFF3A1108),
+        playerColor = Color(0xFFFF9100),
+        exitColor = Color(0xFF1B0703)
+    ),
+    WOODEN_KEEP(
+        id = "wooden_keep",
+        displayName = "Wooden Keep 🪵",
+        primaryColor = Color(0xFFD7CCC8),
+        secondaryColor = Color(0xFF5D4037),
+        wallColor = Color(0xFF2D1B10),
+        floorColor = Color(0xFF4E342E),
+        waypointColor = Color(0xFF3E2723),
+        playerColor = Color(0xFFA1887F),
+        exitColor = Color(0xFF27130A)
+    ),
+    DEEP_SEA(
+        id = "deep_sea",
+        displayName = "Deep Sea Bubbles 🫧",
+        primaryColor = Color(0xFF00E5FF),
+        secondaryColor = Color(0xFF1565C0),
+        wallColor = Color(0xFF010A1B),
+        floorColor = Color(0xFF002244),
+        waypointColor = Color(0xFF001133),
+        playerColor = Color(0xFFE0F7FA),
+        exitColor = Color(0xFF001F3F)
+    ),
+    OVERGROWN_FOLLY(
+        id = "overgrown_ruins",
+        displayName = "Overgrown Ruins 🌿",
+        primaryColor = Color(0xFF66BB6A),
+        secondaryColor = Color(0xFF1B5E20),
+        wallColor = Color(0xFF0D2211),
+        floorColor = Color(0xFF1C3A21),
+        waypointColor = Color(0xFF122C17),
+        playerColor = Color(0xFFA5D6A7),
+        exitColor = Color(0xFF0E2010)
+    ),
+    DESERT_DUNES(
+        id = "desert_dunes",
+        displayName = "Desert Dunes 🏜️",
+        primaryColor = Color(0xFFFFCA28),
+        secondaryColor = Color(0xFF6D4C41),
+        wallColor = Color(0xFF3E2723),
+        floorColor = Color(0xFF8D6E63),
+        waypointColor = Color(0xFF5D4037),
+        playerColor = Color(0xFFFFF9C4),
+        exitColor = Color(0xFF3E221A)
+    )
+}
+
+// Render dynamic, textured retro cells with custom animations
+@Composable
+fun DungeonTileContent(
+    cell: DungeonTile,
+    isPlayer: Boolean,
+    texturePack: TexturePack,
+    bobOffset: Float,
+    flickerAlpha: Float,
+    pulseScale: Float,
+    playerClass: String,
+    enemies: List<Enemy>
+) {
+    val contextColor = when {
+        !cell.isRevealed -> Color(0xFF050404)
+        isPlayer -> texturePack.playerColor.copy(alpha = 0.25f)
+        cell.type == TileType.WALL -> texturePack.wallColor
+        cell.type == TileType.WAYPOINT -> texturePack.waypointColor
+        cell.type == TileType.STAIRS_DOWN -> texturePack.exitColor
+        else -> texturePack.floorColor
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(1.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(contextColor),
+        contentAlignment = Alignment.Center
+    ) {
+        if (cell.isRevealed) {
+            // Draw visual textures inside wall and floor cells using Canvas!
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                
+                // Draw solid wood crate structure if it's a Trap or Chest (matching image #7wood crate exactly)!
+                if (cell.type == TileType.CHEST || cell.type == TileType.TRAP) {
+                    val woodDark = Color(0xFF2E1C12)
+                    val woodMedium = Color(0xFF7A583A)
+                    val woodLight = Color(0xFFB18F64)
+                    val darkBorder = Color(0xFF1B0E07)
+
+                    // Base background
+                    drawRect(color = darkBorder)
+                    drawRect(
+                        color = woodMedium,
+                        topLeft = Offset(1.5f.dp.toPx(), 1.5f.dp.toPx()),
+                        size = size.copy(width = size.width - 3.dp.toPx(), height = size.height - 3.dp.toPx())
+                    )
+                    // Diagonal brace (cross slat)
+                    drawLine(
+                        color = woodDark,
+                        start = Offset(2.dp.toPx(), 2.dp.toPx()),
+                        end = Offset(w - 2.dp.toPx(), h - 2.dp.toPx()),
+                        strokeWidth = 3.2f.dp.toPx()
+                    )
+                    drawLine(
+                        color = woodLight,
+                        start = Offset(3.5f.dp.toPx(), 2.dp.toPx()),
+                        end = Offset(w - 2.dp.toPx(), h - 3.5f.dp.toPx()),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                    // Outer square inside frame lines
+                    drawRect(
+                        color = woodDark,
+                        topLeft = Offset(3.dp.toPx(), 3.dp.toPx()),
+                        size = size.copy(width = size.width - 6.dp.toPx(), height = size.height - 6.dp.toPx()),
+                        style = Stroke(width = 0.8f.dp.toPx())
+                    )
+                    // Nails
+                    drawCircle(Color.Black, radius = 0.7f.dp.toPx(), center = Offset(3.5f.dp.toPx(), 3.5f.dp.toPx()))
+                    drawCircle(Color.Black, radius = 0.7f.dp.toPx(), center = Offset(w - 3.5f.dp.toPx(), 3.5f.dp.toPx()))
+                    drawCircle(Color.Black, radius = 0.7f.dp.toPx(), center = Offset(3.5f.dp.toPx(), h - 3.5f.dp.toPx()))
+                    drawCircle(Color.Black, radius = 0.7f.dp.toPx(), center = Offset(w - 3.5f.dp.toPx(), h - 3.5f.dp.toPx()))
+                } else {
+                    when (cell.type) {
+                        TileType.WALL -> {
+                            when (texturePack) {
+                                TexturePack.CLASSIC_CRYPT -> {
+                                    // Reddish brick rows with mortar joints
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(0f, h * 0.33f), end = Offset(w, h * 0.33f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(0f, h * 0.66f), end = Offset(w, h * 0.66f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(w * 0.5f, 0f), end = Offset(w * 0.5f, h * 0.33f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(w * 0.25f, h * 0.33f), end = Offset(w * 0.25f, h * 0.66f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(w * 0.75f, h * 0.33f), end = Offset(w * 0.75f, h * 0.66f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF2C1F1C), start = Offset(w * 0.5f, h * 0.66f), end = Offset(w * 0.5f, h), strokeWidth = 1.dp.toPx())
+                                }
+                                TexturePack.NEON_SYNTH -> {
+                                    // Glowing neon circuit borders
+                                    drawRect(
+                                        color = texturePack.primaryColor.copy(alpha = 0.5f),
+                                        topLeft = Offset(1.dp.toPx(), 1.dp.toPx()),
+                                        size = size.copy(width = size.width - 2.dp.toPx(), height = size.height - 2.dp.toPx()),
+                                        style = Stroke(width = 1.5.dp.toPx())
+                                    )
+                                    drawCircle(texturePack.primaryColor, radius = 2.dp.toPx(), center = Offset(w / 2, h / 2))
+                                }
+                                TexturePack.ICE_SANCTUM -> {
+                                    // Ice chiseled cracks
+                                    drawLine(Color(0xFF3A6D80), start = Offset(0f, 0f), end = Offset(w, h), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF3A6D80), start = Offset(w, 0f), end = Offset(0f, h), strokeWidth = 0.5.dp.toPx())
+                                }
+                                TexturePack.TOXIC_WASTELAND -> {
+                                    // Diagonal radioactive warning caution lines
+                                    drawLine(Color(0xFF3D2D1B), start = Offset(0f, h * 0.5f), end = Offset(w * 0.5f, 0f), strokeWidth = 2.dp.toPx())
+                                    drawLine(Color(0xFF3D2D1B), start = Offset(0f, h), end = Offset(w, 0f), strokeWidth = 2.dp.toPx())
+                                }
+                                TexturePack.COBBLESTONE_CASTLE -> {
+                                    // Natural grey cobblestone joints (matching image cobblestones)
+                                    drawLine(Color(0xFF1F2B30), start = Offset(0f, h * 0.5f), end = Offset(w, h * 0.5f), strokeWidth = 1.5f.dp.toPx())
+                                    drawLine(Color(0xFF1F2B30), start = Offset(w * 0.5f, 0f), end = Offset(w * 0.5f, h * 0.5f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF1F2B30), start = Offset(w * 0.25f, h * 0.5f), end = Offset(w * 0.25f, h), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF1F2B30), start = Offset(w * 0.75f, h * 0.5f), end = Offset(w * 0.75f, h), strokeWidth = 1.dp.toPx())
+                                }
+                                TexturePack.VOLCANIC_MAGMA -> {
+                                    // High-intensity flowing orange magma cracks
+                                    val lavaCol = Color(0xFFFF4500).copy(alpha = 0.7f + flickerAlpha * 0.3f)
+                                    drawRect(Color(0xFF120502))
+                                    drawLine(lavaCol, start = Offset(w * 0.2f, 0f), end = Offset(w * 0.2f, h), strokeWidth = 2.dp.toPx())
+                                    drawLine(lavaCol, start = Offset(w * 0.8f, 0f), end = Offset(w * 0.8f, h), strokeWidth = 2.dp.toPx())
+                                    drawLine(lavaCol, start = Offset(w * 0.2f, h * 0.5f), end = Offset(w * 0.8f, h * 0.5f), strokeWidth = 1.5f.dp.toPx())
+                                }
+                                TexturePack.WOODEN_KEEP -> {
+                                    // Wood wall plank lines (horizontal paneling block)
+                                    drawLine(Color(0xFF1A100B), start = Offset(w * 0.33f, 0f), end = Offset(w * 0.33f, h), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF1A100B), start = Offset(w * 0.66f, 0f), end = Offset(w * 0.66f, h), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF6F4E37), start = Offset(w * 0.15f, h * 0.2f), end = Offset(w * 0.15f, h * 0.7f), strokeWidth = 0.5f.dp.toPx())
+                                    drawLine(Color(0xFF6F4E37), start = Offset(w * 0.8f, h * 0.3f), end = Offset(w * 0.8f, h * 0.8f), strokeWidth = 0.5f.dp.toPx())
+                                }
+                                TexturePack.DEEP_SEA -> {
+                                    // Water currents on subsea walls
+                                    drawLine(Color(0xFF0F325C).copy(0.4f), start = Offset(0f, h * 0.2f), end = Offset(w, h * 0.5f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF0F325C).copy(0.4f), start = Offset(0f, h * 0.7f), end = Offset(w, h * 0.9f), strokeWidth = 1.dp.toPx())
+                                }
+                                TexturePack.OVERGROWN_FOLLY -> {
+                                    // Overhanging leaf structures
+                                    drawLine(Color(0xFF13321B), start = Offset(0f, 0f), end = Offset(w, h), strokeWidth = 1.5f.dp.toPx())
+                                    drawCircle(Color(0xFF2E7D32), radius = 2.dp.toPx(), center = Offset(w * 0.3f, h * 0.4f))
+                                    drawCircle(Color(0xFF4CAF50), radius = 1.5f.dp.toPx(), center = Offset(w * 0.7f, h * 0.6f))
+                                }
+                                TexturePack.DESERT_DUNES -> {
+                                    // Sand lines
+                                    drawLine(Color(0xFF795548), start = Offset(0f, h * 0.3f), end = Offset(w, h * 0.4f), strokeWidth = 1.dp.toPx())
+                                    drawLine(Color(0xFF795548), start = Offset(0f, h * 0.7f), end = Offset(w, h * 0.8f), strokeWidth = 1.dp.toPx())
+                                }
+                            }
+                        }
+                        TileType.FLOOR -> {
+                            when (texturePack) {
+                                TexturePack.CLASSIC_CRYPT -> {
+                                    // Subtle earthy stone tile specks
+                                    drawCircle(Color(0xFF3A2E2A), radius = 1.dp.toPx(), center = Offset(w * 0.35f, h * 0.4f))
+                                    drawCircle(Color(0xFF3A2E2A), radius = 0.8f.dp.toPx(), center = Offset(w * 0.7f, h * 0.75f))
+                                }
+                                TexturePack.NEON_SYNTH -> {
+                                    // Digital grids
+                                    drawLine(Color(0xFF0F0028), start = Offset(w * 0.5f, 0f), end = Offset(w * 0.5f, h), strokeWidth = 0.5.dp.toPx())
+                                    drawLine(Color(0xFF0F0028), start = Offset(0f, h * 0.5f), end = Offset(w, h * 0.5f), strokeWidth = 0.5.dp.toPx())
+                                }
+                                TexturePack.ICE_SANCTUM -> {
+                                    // Glittering snow specular dots
+                                    drawCircle(Color(0xFFACF3FF).copy(alpha = 0.25f), radius = 1.2.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f))
+                                }
+                                TexturePack.TOXIC_WASTELAND -> {
+                                    // Effervescent bubbles of acid slime
+                                    drawCircle(Color(0xFF558B2F).copy(alpha = flickerAlpha * 0.45f), radius = 2.dp.toPx(), center = Offset(w * 0.4f, h * 0.6f))
+                                }
+                                TexturePack.COBBLESTONE_CASTLE -> {
+                                    // Small natural grey paving stone circles
+                                    drawCircle(Color(0xFF62727B), radius = 1.5f.dp.toPx(), center = Offset(w * 0.3f, h * 0.3f))
+                                    drawCircle(Color(0xFF4F5B62), radius = 2.dp.toPx(), center = Offset(w * 0.7f, h * 0.65f))
+                                    drawCircle(Color(0xFF37474F), radius = 1.2f.dp.toPx(), center = Offset(w * 0.25f, h * 0.75f))
+                                }
+                                TexturePack.VOLCANIC_MAGMA -> {
+                                    // Cooled lava embers
+                                    drawCircle(Color(0xFFFF5722).copy(alpha = flickerAlpha * 0.6f), radius = 1.5f.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f))
+                                    drawCircle(Color(0xFFFFEB3B).copy(alpha = flickerAlpha * 0.4f), radius = 1.dp.toPx(), center = Offset(w * 0.75f, h * 0.3f))
+                                }
+                                TexturePack.WOODEN_KEEP -> {
+                                    // Parquet floor panels (wood board parquet)
+                                    drawLine(Color(0xFF2E1C14), start = Offset(0f, h * 0.5f), end = Offset(w, h * 0.5f), strokeWidth = 0.5f.dp.toPx())
+                                    drawLine(Color(0xFF2E1C14), start = Offset(w * 0.5f, 0f), end = Offset(w * 0.5f, h * 0.5f), strokeWidth = 0.5f.dp.toPx())
+                                    drawLine(Color(0xFF2E1C14), start = Offset(w * 0.5f, h * 0.5f), end = Offset(w * 0.5f, h), strokeWidth = 0.5f.dp.toPx())
+                                }
+                                TexturePack.DEEP_SEA -> {
+                                    // Water bubbles rising up dynamically (bubble tile pattern #4/5)
+                                    val bubY1 = h * ((0.35f + flickerAlpha * 0.15f).coerceIn(0f, 1f))
+                                    val bubY2 = h * ((0.7f - flickerAlpha * 0.15f).coerceIn(0f, 1f))
+                                    drawCircle(Color(0xFFE0F7FA).copy(0.4f), radius = 2.2f.dp.toPx(), center = Offset(w * 0.4f, bubY1))
+                                    drawCircle(Color.White.copy(0.7f), radius = 0.6f.dp.toPx(), center = Offset(w * 0.35f, bubY1 - 1.dp.toPx()))
+                                    drawCircle(Color(0xFFE0F7FA).copy(0.3f), radius = 1.6f.dp.toPx(), center = Offset(w * 0.75f, bubY2))
+                                }
+                                TexturePack.OVERGROWN_FOLLY -> {
+                                    // Green grass leaves structures
+                                    drawCircle(Color(0xFF4CAF50).copy(0.5f), radius = 1.5f.dp.toPx(), center = Offset(w * 0.3f, h * 0.5f))
+                                    drawCircle(Color(0xFF81C784).copy(0.3f), radius = 2.5f.dp.toPx(), center = Offset(w * 0.7f, h * 0.4f))
+                                }
+                                TexturePack.DESERT_DUNES -> {
+                                    // Fine quicksand sand grains
+                                    drawCircle(Color(0xFFD7CCC8).copy(0.6f), radius = 0.8f.dp.toPx(), center = Offset(w * 0.2f, h * 0.3f))
+                                    drawCircle(Color(0xFFD7CCC8).copy(0.6f), radius = 0.8f.dp.toPx(), center = Offset(w * 0.8f, h * 0.7f))
+                                    drawCircle(Color(0xFFD7CCC8).copy(0.6f), radius = 0.8f.dp.toPx(), center = Offset(w * 0.5f, h * 0.8f))
+                                }
+                            }
+                        }
+                        else -> {}
+                    }
+                }
+            }
+ 
+            // Bind tile icons with beautiful visual bobs
+            val cellEmoji = when {
+                isPlayer -> playerIconForClass(playerClass)
+                cell.type == TileType.STAIRS_UP -> "🪜"
+                cell.type == TileType.STAIRS_DOWN -> "🌀"
+                cell.type == TileType.WAYPOINT -> "🌌"
+                cell.type == TileType.CHEST -> "🎁"
+                cell.type == TileType.TRAP -> "⚠️"
+                cell.type == TileType.ENEMY -> {
+                    val mName = enemies.find { it.row == cell.row && it.col == cell.col }?.name ?: ""
+                    enemyEmojiForName(mName)
+                }
+                cell.type == TileType.BOSS -> "👹"
+                else -> ""
+            }
+
+            if (cellEmoji.isNotEmpty()) {
+                val animModifier = when {
+                    isPlayer -> Modifier.offset(y = bobOffset.dp)
+                    cell.type == TileType.WAYPOINT -> Modifier
+                        .scale(0.85f + flickerAlpha * 0.2f)
+                        .rotate(flickerAlpha * 35f)
+                    cell.type == TileType.STAIRS_DOWN -> Modifier.scale(0.95f + flickerAlpha * 0.1f)
+                    cell.type == TileType.ENEMY || cell.type == TileType.BOSS -> Modifier.scale(pulseScale)
+                    else -> Modifier
+                }
+
+                Box(
+                    modifier = animModifier,
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = cellEmoji,
+                        fontSize = when {
+                            isPlayer -> 14.sp
+                            cell.type == TileType.BOSS -> 16.sp
+                            else -> 13.sp
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+// Particle effect simulating atmospheric ember particles
+@Composable
+fun RetroAtmosphereSparks(
+    modifier: Modifier = Modifier,
+    particleColor: Color = Color(0xFFC5A059)
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "sparks")
+    
+    val animations = (0..12).map { index ->
+        val duration = remember { (2200..4500).random() }
+        val startDelay = remember { (0..1500).random() }
+        
+        val progress by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = duration, delayMillis = startDelay, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "p_$index"
+        )
+        progress
+    }
+    
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        if (w == 0f || h == 0f) return@Canvas
+        
+        animations.forEachIndexed { i, progress ->
+            val xSeed = (i * 73) % 100
+            val xPos = (w * (xSeed / 100f) + (progress * 40f - 20f)).coerceIn(0f, w)
+            val yPos = h - (progress * h)
+            
+            val alpha = when {
+                progress < 0.2f -> progress / 0.2f
+                progress > 0.8f -> (1f - progress) / 0.2f
+                else -> 1f
+            }
+            
+            val radius = (1.5.dp + (i % 3).dp).toPx() * (0.5f + (1f - progress) * 0.5f)
+            
+            drawCircle(
+                color = particleColor.copy(alpha = alpha * 0.65f),
+                radius = radius,
+                center = Offset(xPos, yPos)
+            )
+        }
+    }
+}
+
+// Resolves customized emojis for procedurally generated monsters
+fun enemyEmojiForName(name: String): String {
+    val lower = name.lowercase()
+    return when {
+        lower.contains("skeleton") -> "💀"
+        lower.contains("priest") -> "🧙"
+        lower.contains("gargoyle") -> "🦇"
+        lower.contains("hound") -> "🐺"
+        lower.contains("fiend") -> "😈"
+        lower.contains("imp") -> "👺"
+        lower.contains("golem") -> "🤖"
+        lower.contains("chimera") -> "🦁"
+        lower.contains("sentinel") -> "👼"
+        lower.contains("griffin") -> "🦅"
+        lower.contains("drake") -> "🐉"
+        lower.contains("valkyrie") -> "⚔️"
+        lower.contains("necromancer") -> "🧙‍♂️"
+        lower.contains("balrog") -> "🔥"
+        lower.contains("aetherius") -> "👾"
+        lower.contains("void") -> "👁️"
+        else -> "💀"
+    }
+}
+
+// Maps unique classes to custom action icons
+fun playerIconForClass(characterClass: String): String {
+    return when (characterClass.lowercase()) {
+        "mage" -> "🧙"
+        "ranger" -> "🏹"
+        "rogue" -> "🗡️"
+        else -> "⚔️" // Default Knight
+    }
+}
+
+// Combat clash visual graphics animation panel
+@Composable
+fun BattleClashGraphic(
+    enemyEmoji: String,
+    playerCurrentHp: Int,
+    enemyCurrentHp: Int,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "clash")
+    
+    val playerOffset by infiniteTransition.animateFloat(
+        initialValue = -15f,
+        targetValue = 15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(650, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "p_clash"
+    )
+
+    val enemyOffset by infiniteTransition.animateFloat(
+        initialValue = 12f,
+        targetValue = -12f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(750, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "e_clash"
+    )
+
+    val sparksRotate by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(3800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "sparks_rotate"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(100.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF0F0A09))
+            .border(1.dp, Color(0xFF382520)),
+        contentAlignment = Alignment.Center
+    ) {
+        RetroAtmosphereSparks(
+            modifier = Modifier.fillMaxSize(),
+            particleColor = Color(0xFFFF5722)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Player side
+            Box(
+                modifier = Modifier
+                    .offset(x = playerOffset.dp)
+                    .size(50.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (playerCurrentHp <= 0) Color.DarkGray else Color(0x3300FFCC))
+                    .border(1.dp, Color(0xFF00FFCC), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(if (playerCurrentHp <= 0) "🛡️" else "⚔️", fontSize = 26.sp)
+            }
+
+            // Contact Spark
+            Box(
+                modifier = Modifier
+                    .rotate(sparksRotate)
+                    .size(40.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("💥", fontSize = 28.sp)
+            }
+
+            // Enemy side
+            Box(
+                modifier = Modifier
+                    .offset(x = enemyOffset.dp)
+                    .size(50.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (enemyCurrentHp <= 0) Color.DarkGray else Color(0x33FF3D00))
+                    .border(1.dp, Color(0xFFFF3D00), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(if (enemyCurrentHp <= 0) "🪦" else enemyEmoji, fontSize = 26.sp)
+            }
+        }
+    }
+}
+
