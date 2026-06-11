@@ -1,0 +1,51 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Glowing Background Circle -->
+    <path
+        android:fillColor="#FF2D00"
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0"
+        android:strokeWidth="2"
+        android:strokeColor="#FFD54F" />
+
+    <!-- Medieval Shield Outline -->
+    <path
+        android:fillColor="#1A0D0A"
+        android:strokeColor="#FFC107"
+        android:strokeWidth="3.5"
+        android:pathData="M54,18 L84,32 L84,58 L54,88 L24,58 L24,32 Z" />
+
+    <!-- Shield Inner Contrast -->
+    <path
+        android:fillColor="#D32F2F"
+        android:pathData="M54,23 L78,35 L78,56 L54,82 L30,56 L30,35 Z" />
+
+    <!-- Center Legend Sword -->
+    <!-- Blade -->
+    <path
+        android:fillColor="#ECEFF1"
+        android:pathData="M54,25 L58,54 L50,54 Z" />
+    <path
+        android:fillColor="#CFD8DC"
+        android:pathData="M54,25 L50,54 L54,54 Z" />
+
+    <!-- Guard -->
+    <path
+        android:fillColor="#FFC107"
+        android:pathData="M40,54 L68,54 L68,58 L40,58 Z" />
+
+    <!-- Hilt -->
+    <path
+        android:fillColor="#B0BEC5"
+        android:pathData="M52,58 L52,78 L56,78 L56,58 Z" />
+
+    <!-- Pommel Jewel -->
+    <path
+        android:fillColor="#E53935"
+        android:pathData="M54,78m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+
+</vector>

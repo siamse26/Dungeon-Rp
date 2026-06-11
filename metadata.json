@@ -1,0 +1,6 @@
+{
+  "name": "Dungeon Crawler RPG",
+  "description": "Procedurally generated rogue-like dungeon crawler RPG with legendary loot, active battles, tactical companion support, offline maps, and rich customizable builds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
