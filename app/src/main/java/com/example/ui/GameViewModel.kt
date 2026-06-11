@@ -146,6 +146,12 @@ class GameViewModel(
                 classBaseCrit += 15
                 if (bonusSpeed == 0f || bonusSpeed > 0.9f) bonusSpeed = 0.82f
             }
+            "Shinobi" -> {
+                classBaseAtk += 10
+                classBaseDodge += 12
+                classBaseCrit += 10
+                if (bonusSpeed == 0f || bonusSpeed > 0.8f) bonusSpeed = 0.72f // very fast standard physical physical triggers!
+            }
         }
 
         // Evaluate Sets
@@ -161,7 +167,7 @@ class GameViewModel(
         }
 
         // 2. Slayer of Doom Set: Weapons with "Eldritch", "Slashing", "Void" or high rarities
-        val weaponCount = items.count { it.type == ItemType.WEAPON.name && (it.rarity == Rarity.EPIC.name || it.rarity == Rarity.LEGENDARY.name) }
+        val weaponCount = items.count { it.type == ItemType.WEAPON.name && (it.rarity == Rarity.EPIC.name || it.rarity == Rarity.RARE.name || it.rarity == Rarity.LEGENDARY.name) }
         if (weaponCount >= 1) {
             bonusAtk += 10
             bonusCrit += 12
@@ -215,6 +221,10 @@ class GameViewModel(
     private val _chestDrop = MutableStateFlow<ItemEntity?>(null)
     val chestDrop: StateFlow<ItemEntity?> = _chestDrop.asStateFlow()
 
+    // Real-time discovered room event for notification HUD
+    private val _roomDiscoveredEvent = MutableStateFlow<DungeonRoom?>(null)
+    val roomDiscoveredEvent: StateFlow<DungeonRoom?> = _roomDiscoveredEvent.asStateFlow()
+
     init {
         viewModelScope.launch {
             repository.provisionStarterItems()
@@ -226,6 +236,11 @@ class GameViewModel(
     // Reset chest award overlay
     fun closeChestDrop() {
         _chestDrop.value = null
+    }
+
+    // Dismiss custom room discovery notification banner
+    fun dismissRoomDiscovery() {
+        _roomDiscoveredEvent.value = null
     }
 
     // Accept and keep chest item
@@ -314,6 +329,13 @@ class GameViewModel(
         // Reveal map area (Fog of war)
         val generator = DungeonGenerator()
         generator.revealArea(dungeon.grid, newRow, newCol, dungeon.width, dungeon.height)
+
+        // Track procedural room discovery in real-time
+        val discoveredRoom = dungeon.updateRoomDiscovery(newRow, newCol)
+        if (discoveredRoom != null) {
+            addDungeonLog("📍 NEW CHAMBER REVEALED: ${discoveredRoom.name}!")
+            _roomDiscoveredEvent.value = discoveredRoom
+        }
 
         // Force recompose trigger
         _activeDungeon.value = dungeon.copy(playerRow = newRow, playerCol = newCol)
@@ -1038,18 +1060,21 @@ class GameViewModel(
                 "Knight" -> 14
                 "Mage" -> 8
                 "Rogue" -> 10
+                "Shinobi" -> 16
                 else -> 12
             }
             val baseDef = when (className) {
                 "Knight" -> 8
                 "Mage" -> 2
                 "Rogue" -> 4
+                "Shinobi" -> 6
                 else -> 4
             }
             val baseHp = when (className) {
                 "Knight" -> 120
                 "Mage" -> 85
                 "Rogue" -> 95
+                "Shinobi" -> 112
                 else -> 100
             }
             repository.updatePlayerState(player.copy(

@@ -6,6 +6,18 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke as CanvasStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -15,6 +27,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.*
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -54,6 +68,7 @@ fun DungeonGameApp(
     val chestDrop by viewModel.chestDrop.collectAsStateWithLifecycle()
     val syncConflict by viewModel.syncConflictState.collectAsStateWithLifecycle()
     val travelCodexOpen by viewModel.travelCodexOpen.collectAsStateWithLifecycle()
+    val roomDiscoveredEvent by viewModel.roomDiscoveredEvent.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
 
@@ -133,14 +148,17 @@ fun DungeonGameApp(
                             playerClass = p.characterClass
                         )
 
-                        "inventory" -> InventoryScreen(
-                            items = allItems,
-                            equippedItems = equippedItems,
-                            onEquip = { viewModel.equipItem(it) },
-                            onUnequip = { viewModel.unequipItem(it) },
-                            onSell = { viewModel.sellItem(it) },
-                            onBack = { viewModel.navigateTo("home") }
-                        )
+                        "inventory" -> {
+                            InventoryScreen(
+                                player = p,
+                                items = allItems,
+                                equippedItems = equippedItems,
+                                onEquip = { viewModel.equipItem(it) },
+                                onUnequip = { viewModel.unequipItem(it) },
+                                onSell = { viewModel.sellItem(it) },
+                                onBack = { viewModel.navigateTo("home") }
+                            )
+                        }
 
                         "skills" -> SkillTreeScreen(
                             player = p,
@@ -176,7 +194,8 @@ fun DungeonGameApp(
                         onDodge = { viewModel.performDodgeRoll() },
                         onShieldBlock = { viewModel.performShieldBlock() },
                         onWeaponSwitch = { viewModel.performWeaponSwitch() },
-                        onFlee = { viewModel.fleeBattle() }
+                        onFlee = { viewModel.fleeBattle() },
+                        playerClass = p.characterClass
                     )
                 }
 
@@ -213,6 +232,14 @@ fun DungeonGameApp(
                             viewModel.navigateTo("home")
                             viewModel.closeTravelCodex()
                         }
+                    )
+                }
+
+                // 5. Room Discovery Overlay
+                if (roomDiscoveredEvent != null) {
+                    RoomDiscoveryBanner(
+                        room = roomDiscoveredEvent!!,
+                        onDismiss = { viewModel.dismissRoomDiscovery() }
                     )
                 }
             }
@@ -420,18 +447,26 @@ fun MainMenuScreen(
                     // Adaptive Character Avatar / Crest
                     Box(
                         modifier = Modifier
-                            .size(72.dp)
+                            .size(76.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF402821))
-                            .border(3.dp, EmberGold, CircleShape),
+                            .background(Color(0xFF1E1715))
+                            .border(3.dp, if (player.characterClass == "Shinobi") Color(0xFFFF9100) else EmberGold, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.SportsEsports,
-                            contentDescription = "Character Crest",
-                            tint = EmberGold,
-                            modifier = Modifier.size(40.dp)
-                        )
+                        if (player.characterClass == "Shinobi") {
+                            NarutoShinobiSprite(
+                                animState = "idle",
+                                modifier = Modifier.size(68.dp),
+                                scaleFactor = 1.25f
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.SportsEsports,
+                                contentDescription = "Character Crest",
+                                tint = EmberGold,
+                                modifier = Modifier.size(40.dp)
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -645,7 +680,7 @@ fun MainMenuScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val classes = listOf("Knight", "Mage", "Rogue")
+                    val classes = listOf("Knight", "Mage", "Rogue", "Shinobi")
                     classes.forEach { cls ->
                         val isSelected = (player.characterClass == cls)
                         Button(
@@ -913,6 +948,7 @@ fun DungeonExplorationScreen(
     }
 
     var activeTexturePack by remember { mutableStateOf(TexturePack.CLASSIC_CRYPT) }
+    var showMinimap by remember { mutableStateOf(true) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "dungeon_anims")
     val bobOffset by infiniteTransition.animateFloat(
@@ -942,6 +978,38 @@ fun DungeonExplorationScreen(
         ),
         label = "enemy_pulse"
     )
+
+    var narutoAnimState by remember { mutableStateOf("idle") }
+    var kyubiChakraActive by remember { mutableStateOf(false) }
+    var kyubiTimeRemaining by remember { mutableStateOf(0) }
+
+    // Countdown timer for Nine-Tails Kyubi Mode power-up
+    LaunchedEffect(kyubiChakraActive) {
+        if (kyubiChakraActive) {
+            narutoAnimState = "powerup"
+            kyubiTimeRemaining = 12
+            while (kyubiTimeRemaining > 0) {
+                delay(1000)
+                kyubiTimeRemaining--
+            }
+            kyubiChakraActive = false
+            narutoAnimState = "idle"
+        }
+    }
+
+    // Trigger running and collecting state animations based on player coordinate changes
+    LaunchedEffect(dungeon.playerRow, dungeon.playerCol) {
+        if (!kyubiChakraActive && playerClass.lowercase() == "shinobi") {
+            narutoAnimState = "running"
+            delay(400)
+            val currentTile = dungeon.grid[dungeon.playerRow][dungeon.playerCol].type
+            if (currentTile == TileType.CHEST) {
+                narutoAnimState = "collecting"
+                delay(1200)
+            }
+            narutoAnimState = "idle"
+        }
+    }
 
     // Identify if player stands on Stairs down
     val isPlayerOnStairsDown = dungeon.grid[dungeon.playerRow][dungeon.playerCol].type == TileType.STAIRS_DOWN
@@ -1010,6 +1078,41 @@ fun DungeonExplorationScreen(
                     )
                 }
 
+                // MINI-MAP TOGGLE BUTTON
+                IconButton(
+                    onClick = { showMinimap = !showMinimap },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (showMinimap) activeTexturePack.primaryColor.copy(0.2f) else Color(0x1AFFFFFF))
+                        .size(34.dp)
+                        .testTag("toggle_minimap")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Map,
+                        contentDescription = "Toggle Mini-Map",
+                        tint = if (showMinimap) activeTexturePack.primaryColor else Color.LightGray,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // FOX CHAKRA AWAKENING POWERUP (Shinobi Naruto Exclusive!)
+                if (playerClass.lowercase() == "shinobi") {
+                    IconButton(
+                        onClick = { kyubiChakraActive = !kyubiChakraActive },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (kyubiChakraActive) Color(0xFFFF5722).copy(alpha = 0.35f) else Color(0xFFF57C00).copy(alpha = 0.15f))
+                            .border(1.dp, if (kyubiChakraActive) Color(0xFFFF5722) else Color(0xFFFFB300), RoundedCornerShape(8.dp))
+                            .size(34.dp)
+                            .testTag("action_kyubi_powerup")
+                    ) {
+                        Text(
+                            text = if (kyubiChakraActive) "🦊" else "🔥",
+                            fontSize = 15.sp
+                        )
+                    }
+                }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Favorite, contentDescription = null, tint = CrimsonRed, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
@@ -1050,11 +1153,159 @@ fun DungeonExplorationScreen(
                                         flickerAlpha = flickerAlpha,
                                         pulseScale = pulseScale,
                                         playerClass = playerClass,
-                                        enemies = dungeon.enemies
+                                        enemies = dungeon.enemies,
+                                        narutoAnimState = narutoAnimState
                                     )
                                 }
                             }
                         }
+                    }
+                }
+
+                // DYNAMIC MINI-MAP OVERLAY SYSTEM
+                if (showMinimap) {
+                    Card(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(4.dp)
+                            .clickable { showMinimap = false }
+                            .testTag("dungeon_minimap_card"),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, activeTexturePack.primaryColor.copy(alpha = 0.7f)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xF2080605))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            val totalRooms = dungeon.rooms.size
+                            val discRooms = dungeon.rooms.count { it.isDiscovered }
+                            val currentRoomName = dungeon.rooms.find { r ->
+                                dungeon.playerCol >= r.x && dungeon.playerCol < r.x + r.w &&
+                                dungeon.playerRow >= r.y && dungeon.playerRow < r.y + r.h
+                            }?.name ?: "Dungeon Corridor"
+
+                            Row(
+                                modifier = Modifier
+                                    .width(110.dp)
+                                    .padding(bottom = 3.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "MAP SENSOR",
+                                    fontSize = 7.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = activeTexturePack.primaryColor,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = "RMS $discRooms/$totalRooms",
+                                    fontSize = 7.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.LightGray,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
+
+                            Text(
+                                text = "LOC: ${currentRoomName.uppercase()}",
+                                fontSize = 6.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = EmberGold,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .width(110.dp)
+                                    .padding(bottom = 4.dp),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                            
+                            Canvas(
+                                modifier = Modifier
+                                    .size(110.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Color(0xFF030202))
+                            ) {
+                                val cols = dungeon.width
+                                val rows = dungeon.height
+                                val cellW = size.width / cols
+                                val cellH = size.height / rows
+                                
+                                // Draw revealed tiles first
+                                for (r in 0 until rows) {
+                                    for (c in 0 until cols) {
+                                        val tile = dungeon.grid[r][c]
+                                        if (tile.isRevealed) {
+                                            val tileColor = when {
+                                                r == dungeon.playerRow && c == dungeon.playerCol -> Color(0xFF00E5FF)
+                                                tile.type == TileType.STAIRS_DOWN -> Color(0xFFFFCC00)
+                                                tile.type == TileType.STAIRS_UP -> Color(0xFF26A69A)
+                                                tile.type == TileType.WAYPOINT -> Color(0xFF9575CD)
+                                                tile.type == TileType.CHEST -> Color(0xFFFFB74D)
+                                                tile.type == TileType.ENEMY || tile.type == TileType.BOSS -> Color(0xFFFF3366)
+                                                tile.type == TileType.TRAP -> Color(0xFFEF5350)
+                                                tile.type == TileType.WALL -> activeTexturePack.wallColor.copy(alpha = 0.85f)
+                                                else -> activeTexturePack.floorColor.copy(alpha = 0.5f)
+                                            }
+                                            
+                                            drawRect(
+                                                color = tileColor,
+                                                topLeft = Offset(c * cellW + 0.3.dp.toPx(), r * cellH + 0.3.dp.toPx()),
+                                                size = androidx.compose.ui.geometry.Size(cellW - 0.6.dp.toPx(), cellH - 0.6.dp.toPx())
+                                            )
+                                            
+                                            if (r == dungeon.playerRow && c == dungeon.playerCol) {
+                                                drawCircle(
+                                                    color = Color(0xFF00E5FF).copy(alpha = flickerAlpha * 0.5f),
+                                                    radius = cellW * 1.5f * (0.8f + pulseScale * 0.2f),
+                                                    center = Offset(c * cellW + cellW / 2, r * cellH + cellH / 2),
+                                                    style = Stroke(width = 0.8f.dp.toPx())
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Draw faint glowing outlines for discovered rooms
+                                for (room in dungeon.rooms) {
+                                    if (room.isDiscovered) {
+                                        drawRect(
+                                            color = Color(0xFFFFB300).copy(alpha = 0.22f * flickerAlpha),
+                                            topLeft = Offset(room.x * cellW, room.y * cellH),
+                                            size = androidx.compose.ui.geometry.Size(room.w * cellW, room.h * cellH),
+                                            style = Stroke(width = 0.8f.dp.toPx())
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(4.dp)
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xE60D0B0A))
+                            .border(1.dp, activeTexturePack.primaryColor.copy(alpha = 0.6f), CircleShape)
+                            .clickable { showMinimap = true }
+                            .testTag("expand_minimap_badge"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "🗺️",
+                            fontSize = 11.sp
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = (-2).dp, y = 2.dp)
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE53935).copy(alpha = flickerAlpha))
+                        )
                     }
                 }
             }
@@ -1318,6 +1569,7 @@ fun DungeonExplorationScreen(
 // 3. INVENTORY & EQUIPMENT SCREEN
 @Composable
 fun InventoryScreen(
+    player: PlayerStateEntity,
     items: List<ItemEntity>,
     equippedItems: List<ItemEntity>,
     onEquip: (ItemEntity) -> Unit,
@@ -1327,225 +1579,1169 @@ fun InventoryScreen(
 ) {
     var selectedItem by remember { mutableStateOf<ItemEntity?>(null) }
 
-    Column(
+    // Drag and drop states
+    var activeDraggingItem by remember { mutableStateOf<ItemEntity?>(null) }
+    var activeDraggingEquippedItem by remember { mutableStateOf<ItemEntity?>(null) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragStartOffset by remember { mutableStateOf(Offset.Zero) }
+
+    val slotBounds = remember { mutableStateMapOf<String, Rect>() }
+    var parentCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    val currentPointerPosition = if (activeDraggingItem != null || activeDraggingEquippedItem != null) {
+        dragStartOffset + dragOffset
+    } else {
+        Offset.Zero
+    }
+
+    val currentHoveredSlot = remember(currentPointerPosition, slotBounds) {
+        if (currentPointerPosition == Offset.Zero) null
+        else {
+            slotBounds.entries.find { it.value.contains(currentPointerPosition) }?.key
+        }
+    }
+
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .onGloballyPositioned { parentCoordinates = it }
     ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        val isLandscape = maxWidth >= 720.dp
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(14.dp)
         ) {
-            Text("Loot Inventory Chest", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-            Text("${items.size} / 25 items", color = Color.Gray, fontSize = 13.sp)
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Compare Card Pane (if weapon selected)
-        if (selectedItem != null) {
-            val compareItem = selectedItem!!
-            val currentEquipped = equippedItems.find { it.type == compareItem.type }
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                shape = RoundedCornerShape(12.dp),
-                color = DarkSlate,
-                border = BorderStroke(1.5.dp, getRarityColor(compareItem.rarity))
+            // Header bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.testTag("inventory_back_button")
                     ) {
-                        Column {
-                            Text(
-                                compareItem.rarity,
-                                color = getRarityColor(compareItem.rarity),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
-                            )
-                            Text(compareItem.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        IconButton(onClick = { selectedItem = null }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close Compare", tint = Color.LightGray)
-                        }
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.LightGray)
                     }
-
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = compareItem.description,
-                        color = Color.LightGray,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(vertical = 4.dp)
+                        text = "Citadel Treasury Inventory",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Monospace
                     )
+                }
 
-                    Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF382A25))
+                // Currency Gold graphic overlay
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF261D1A))
+                        .border(1.dp, EmberGold.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Image(
+                        painter = painterResource(id = com.example.R.drawable.img_gold_coin_1781169563739),
+                        contentDescription = "Gold Chest Currency",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "${player.gold} gold",
+                        color = EmberGold,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
 
-                    // Comparative Stats layout
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("SELECTED ITEM STATS:", fontSize = 11.sp, color = EmberGold, fontWeight = FontWeight.Bold)
-                            if (compareItem.bonusAttack > 0) Text("+${compareItem.bonusAttack} Attack ⚔️", color = Color.White)
-                            if (compareItem.bonusDefense > 0) Text("+${compareItem.bonusDefense} Defense 🛡️", color = Color.White)
-                            if (compareItem.bonusHp > 0) Text("+${compareItem.bonusHp} Max HP ❤️", color = Color.White)
-                            if (compareItem.bonusCrit > 0) Text("+${compareItem.bonusCrit}% Critical Strike ✨", color = Color.White)
-                        }
+            Spacer(modifier = Modifier.height(10.dp))
 
-                        if (currentEquipped != null) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("COMPARE TO EQUIPPED:", fontSize = 11.sp, color = Color.MediumGray(), fontWeight = FontWeight.Bold)
-                                Text(currentEquipped.name, color = Color.LightGray, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                
-                                val atkDiff = compareItem.bonusAttack - currentEquipped.bonusAttack
-                                if (atkDiff != 0) {
-                                    Text(
-                                        text = "${if (atkDiff > 0) "+" else ""}$atkDiff Attack",
-                                        color = if (atkDiff > 0) CosmicTeal else CrimsonRed,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-
-                                val defDiff = compareItem.bonusDefense - currentEquipped.bonusDefense
-                                if (defDiff != 0) {
-                                    Text(
-                                        text = "${if (defDiff > 0) "+" else ""}$defDiff Defense",
-                                        color = if (defDiff > 0) CosmicTeal else CrimsonRed,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        } else {
-                            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                                Text("No existing gear equipped in this slot.", color = Color.Gray, fontSize = 11.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // MAIN SPLIT CONTAINER
+            if (isLandscape) {
+                // Landscape Side-by-Side Design
+                Row(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // LEFT PANEL: CHARACTER DOLL & CURRENT SLOTS
+                    Column(
+                        modifier = Modifier
+                            .width(280.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Button(
-                            onClick = {
-                                if (compareItem.isEquipped) {
-                                    onUnequip(compareItem)
-                                } else {
-                                    onEquip(compareItem)
-                                }
-                                selectedItem = null
-                            },
-                            modifier = Modifier
-                                .weight(1.3f)
-                                .testTag("compare_action_equip"),
-                            colors = ButtonDefaults.buttonColors(containerColor = EmberGold)
+                        // Character info summary
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkSlate,
+                            border = BorderStroke(1.dp, Color(0xFF382A25))
                         ) {
-                            Text(if (compareItem.isEquipped) "UNEQUIP" else "EQUIP PIECE", color = ShadowBlack)
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF261D1A))
+                                        .border(1.dp, EmberGold, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        painter = painterResource(id = com.example.R.drawable.img_naruto_avatar_1781168071390),
+                                        contentDescription = "Character Portrait",
+                                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(text = player.characterClass.uppercase(), color = EmberGold, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                    Text(text = "Outfit: ${player.outfitStyle}", color = Color.Gray, fontSize = 10.sp)
+                                    Text(text = "Lv. ${player.level} Guild Explorer", color = Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
                         }
 
-                        Button(
-                            onClick = {
-                                onSell(compareItem)
-                                selectedItem = null
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("compare_action_sell"),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF382A25))
+                        // Active Equipment Panel (Doll Slots)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xF20F0D0C),
+                            border = BorderStroke(1.5.dp, Color(0xFF2E2421))
                         ) {
-                            Text("SELL (+${compareItem.purchaseGoldValue}g)", color = EmberGold)
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                Text(
+                                    text = "ACTIVE EQUIPPED SLOTS",
+                                    color = Color.Gray,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    EquipmentDollSlot(
+                                        type = "HELMET",
+                                        equippedItems = equippedItems,
+                                        slotBounds = slotBounds,
+                                        parentCoordinates = parentCoordinates,
+                                        activeDraggingItem = activeDraggingItem,
+                                        currentHoveredSlot = currentHoveredSlot,
+                                        onEquip = onEquip,
+                                        onUnequip = onUnequip,
+                                        onSelect = { selectedItem = it },
+                                        onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                        onEquipDragStart = { item, localOffset ->
+                                            activeDraggingEquippedItem = item
+                                            slotBounds["HELMET_SLOT"]?.let { bounds ->
+                                                dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                            }
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onEquipDrag = { amount -> dragOffset += amount },
+                                        onEquipDragEnd = { item ->
+                                            if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                                onUnequip(item)
+                                            }
+                                            activeDraggingEquippedItem = null
+                                            dragOffset = Offset.Zero
+                                        }
+                                    )
+                                    EquipmentDollSlot(
+                                        type = "WEAPON",
+                                        equippedItems = equippedItems,
+                                        slotBounds = slotBounds,
+                                        parentCoordinates = parentCoordinates,
+                                        activeDraggingItem = activeDraggingItem,
+                                        currentHoveredSlot = currentHoveredSlot,
+                                        onEquip = onEquip,
+                                        onUnequip = onUnequip,
+                                        onSelect = { selectedItem = it },
+                                        onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                        onEquipDragStart = { item, localOffset ->
+                                            activeDraggingEquippedItem = item
+                                            slotBounds["WEAPON_SLOT"]?.let { bounds ->
+                                                dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                            }
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onEquipDrag = { amount -> dragOffset += amount },
+                                        onEquipDragEnd = { item ->
+                                            if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                                onUnequip(item)
+                                            }
+                                            activeDraggingEquippedItem = null
+                                            dragOffset = Offset.Zero
+                                        }
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    EquipmentDollSlot(
+                                        type = "CHEST",
+                                        equippedItems = equippedItems,
+                                        slotBounds = slotBounds,
+                                        parentCoordinates = parentCoordinates,
+                                        activeDraggingItem = activeDraggingItem,
+                                        currentHoveredSlot = currentHoveredSlot,
+                                        onEquip = onEquip,
+                                        onUnequip = onUnequip,
+                                        onSelect = { selectedItem = it },
+                                        onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                        onEquipDragStart = { item, localOffset ->
+                                            activeDraggingEquippedItem = item
+                                            slotBounds["CHEST_SLOT"]?.let { bounds ->
+                                                dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                            }
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onEquipDrag = { amount -> dragOffset += amount },
+                                        onEquipDragEnd = { item ->
+                                            if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                                onUnequip(item)
+                                            }
+                                            activeDraggingEquippedItem = null
+                                            dragOffset = Offset.Zero
+                                        }
+                                    )
+                                    EquipmentDollSlot(
+                                        type = "SHIELD",
+                                        equippedItems = equippedItems,
+                                        slotBounds = slotBounds,
+                                        parentCoordinates = parentCoordinates,
+                                        activeDraggingItem = activeDraggingItem,
+                                        currentHoveredSlot = currentHoveredSlot,
+                                        onEquip = onEquip,
+                                        onUnequip = onUnequip,
+                                        onSelect = { selectedItem = it },
+                                        onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                        onEquipDragStart = { item, localOffset ->
+                                            activeDraggingEquippedItem = item
+                                            slotBounds["SHIELD_SLOT"]?.let { bounds ->
+                                                dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                            }
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onEquipDrag = { amount -> dragOffset += amount },
+                                        onEquipDragEnd = { item ->
+                                            if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                                onUnequip(item)
+                                            }
+                                            activeDraggingEquippedItem = null
+                                            dragOffset = Offset.Zero
+                                        }
+                                    )
+                                }
+
+                                Text(
+                                    text = "Drag piece to unequip anywhere",
+                                    color = Color.LightGray.copy(0.6f),
+                                    fontSize = 9.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+
+                    // RIGHT PANEL: BACKPACK GRID
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Compare Card Pane (if selected) or general statistics info
+                        if (selectedItem != null) {
+                            InventoryComparePane(selectedItem!!, equippedItems, onEquip, onUnequip, onSell) { selectedItem = null }
+                        } else {
+                            InventoryStatsPane(player, equippedItems, items)
+                        }
+
+                        // Active backpack cells grid
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .onGloballyPositioned { coords ->
+                                    parentCoordinates?.let { parent ->
+                                        if (coords.isAttached && parent.isAttached) {
+                                            slotBounds["BACKPACK_ZONE"] = parent.localBoundingBoxOf(coords)
+                                        }
+                                    }
+                                },
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkSlate,
+                            border = BorderStroke(1.dp, Color(0xFF382A25))
+                        ) {
+                            BackpackItemsGrid(
+                                items = items,
+                                selectedItem = selectedItem,
+                                onItemClick = { selectedItem = it },
+                                activeDraggingItem = activeDraggingItem,
+                                slotBounds = slotBounds,
+                                parentCoordinates = parentCoordinates,
+                                onDragStart = { item, offset ->
+                                    activeDraggingItem = item
+                                    slotBounds[item.id.toString()]?.let { bounds ->
+                                        dragStartOffset = Offset(bounds.left + offset.x, bounds.top + offset.y)
+                                    } ?: run {
+                                        dragStartOffset = offset
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                                onDrag = { _, amount -> dragOffset += amount },
+                                onDragEnd = { item ->
+                                    val matchingSlotName = "${item.type}_SLOT"
+                                    if (currentHoveredSlot == matchingSlotName) {
+                                        onEquip(item)
+                                    }
+                                    activeDraggingItem = null
+                                    dragOffset = Offset.Zero
+                                }
+                            )
                         }
                     }
                 }
-            }
-        }
+            } else {
+                // Portrait Segmented Stack Design for standard mobile viewport
+                Column(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Active Equipment Doll Slots row
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xF20F0D0C),
+                        border = BorderStroke(1.dp, Color(0xFF2E2421))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            EquipmentDollSlot(
+                                type = "HELMET",
+                                equippedItems = equippedItems,
+                                slotBounds = slotBounds,
+                                parentCoordinates = parentCoordinates,
+                                activeDraggingItem = activeDraggingItem,
+                                currentHoveredSlot = currentHoveredSlot,
+                                onEquip = onEquip,
+                                onUnequip = onUnequip,
+                                onSelect = { selectedItem = it },
+                                onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                onEquipDragStart = { item, localOffset ->
+                                    activeDraggingEquippedItem = item
+                                    slotBounds["HELMET_SLOT"]?.let { bounds ->
+                                        dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                                onEquipDrag = { amount -> dragOffset += amount },
+                                onEquipDragEnd = { item ->
+                                    if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                        onUnequip(item)
+                                    }
+                                    activeDraggingEquippedItem = null
+                                    dragOffset = Offset.Zero
+                                }
+                            )
+                            EquipmentDollSlot(
+                                type = "WEAPON",
+                                equippedItems = equippedItems,
+                                slotBounds = slotBounds,
+                                parentCoordinates = parentCoordinates,
+                                activeDraggingItem = activeDraggingItem,
+                                currentHoveredSlot = currentHoveredSlot,
+                                onEquip = onEquip,
+                                onUnequip = onUnequip,
+                                onSelect = { selectedItem = it },
+                                onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                onEquipDragStart = { item, localOffset ->
+                                    activeDraggingEquippedItem = item
+                                    slotBounds["WEAPON_SLOT"]?.let { bounds ->
+                                        dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                                onEquipDrag = { amount -> dragOffset += amount },
+                                onEquipDragEnd = { item ->
+                                    if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                        onUnequip(item)
+                                    }
+                                    activeDraggingEquippedItem = null
+                                    dragOffset = Offset.Zero
+                                }
+                            )
+                            EquipmentDollSlot(
+                                type = "CHEST",
+                                equippedItems = equippedItems,
+                                slotBounds = slotBounds,
+                                parentCoordinates = parentCoordinates,
+                                activeDraggingItem = activeDraggingItem,
+                                currentHoveredSlot = currentHoveredSlot,
+                                onEquip = onEquip,
+                                onUnequip = onUnequip,
+                                onSelect = { selectedItem = it },
+                                onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                onEquipDragStart = { item, localOffset ->
+                                    activeDraggingEquippedItem = item
+                                    slotBounds["CHEST_SLOT"]?.let { bounds ->
+                                        dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                                onEquipDrag = { amount -> dragOffset += amount },
+                                onEquipDragEnd = { item ->
+                                    if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                        onUnequip(item)
+                                    }
+                                    activeDraggingEquippedItem = null
+                                    dragOffset = Offset.Zero
+                                }
+                            )
+                            EquipmentDollSlot(
+                                type = "SHIELD",
+                                equippedItems = equippedItems,
+                                slotBounds = slotBounds,
+                                parentCoordinates = parentCoordinates,
+                                activeDraggingItem = activeDraggingItem,
+                                currentHoveredSlot = currentHoveredSlot,
+                                onEquip = onEquip,
+                                onUnequip = onUnequip,
+                                onSelect = { selectedItem = it },
+                                onEquipActiveDrag = { activeDraggingEquippedItem = it },
+                                onEquipDragStart = { item, localOffset ->
+                                    activeDraggingEquippedItem = item
+                                    slotBounds["SHIELD_SLOT"]?.let { bounds ->
+                                        dragStartOffset = Offset(bounds.left + localOffset.x, bounds.top + localOffset.y)
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                                onEquipDrag = { amount -> dragOffset += amount },
+                                onEquipDragEnd = { item ->
+                                    if (currentHoveredSlot == "BACKPACK_ZONE" || currentHoveredSlot == null) {
+                                        onUnequip(item)
+                                    }
+                                    activeDraggingEquippedItem = null
+                                    dragOffset = Offset.Zero
+                                }
+                            )
+                        }
+                    }
 
-        // Inventory list
-        if (items.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.HelpOutline, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
-                    Text("Inventory is Empty", color = Color.White, fontWeight = FontWeight.Bold)
-                    Text("Slay dungeon creatures to drop rare procedural artifacts.", color = Color.Gray, fontSize = 12.sp)
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(items) { item ->
-                    val color = getRarityColor(item.rarity)
+                    // Selected Compare Spec Card OR stats
+                    if (selectedItem != null) {
+                        InventoryComparePane(selectedItem!!, equippedItems, onEquip, onUnequip, onSell) { selectedItem = null }
+                    } else {
+                        InventoryStatsPane(player, equippedItems, items)
+                    }
+
+                    // Backpack Grid filling bottom available space
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { selectedItem = item },
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (item.isEquipped) Color(0xFF1E261A) else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, if (item.isEquipped) CosmicTeal else Color(0xFF382A25))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = item.rarity,
-                                        color = color,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 10.sp
-                                    )
-                                    if (item.isEquipped) {
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(CosmicTeal)
-                                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                                        ) {
-                                            Text("EQUIPPED", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                        }
+                            .weight(1f)
+                            .onGloballyPositioned { coords ->
+                                parentCoordinates?.let { parent ->
+                                    if (coords.isAttached && parent.isAttached) {
+                                        slotBounds["BACKPACK_ZONE"] = parent.localBoundingBoxOf(coords)
                                     }
                                 }
-
-                                Text(
-                                    item.name,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
-                                )
-
-                                Text(
-                                    text = "Slot: ${item.type} | Value: ${item.purchaseGoldValue}g",
-                                    color = Color.Gray,
-                                    fontSize = 11.sp
-                                )
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSlate,
+                        border = BorderStroke(1.dp, Color(0xFF382A25))
+                    ) {
+                        BackpackItemsGrid(
+                            items = items,
+                            selectedItem = selectedItem,
+                            onItemClick = { selectedItem = it },
+                            activeDraggingItem = activeDraggingItem,
+                            slotBounds = slotBounds,
+                            parentCoordinates = parentCoordinates,
+                            onDragStart = { item, offset ->
+                                activeDraggingItem = item
+                                slotBounds[item.id.toString()]?.let { bounds ->
+                                    dragStartOffset = Offset(bounds.left + offset.x, bounds.top + offset.y)
+                                } ?: run {
+                                    dragStartOffset = offset
+                                }
+                                dragOffset = Offset.Zero
+                            },
+                            onDrag = { _, amount -> dragOffset += amount },
+                            onDragEnd = { item ->
+                                val matchingSlotName = "${item.type}_SLOT"
+                                if (currentHoveredSlot == matchingSlotName) {
+                                    onEquip(item)
+                                }
+                                activeDraggingItem = null
+                                dragOffset = Offset.Zero
                             }
+                        )
+                    }
+                }
+            }
+        }
 
-                            // Dynamic stats display helper
-                            val statText = when {
-                                item.bonusAttack > 0 -> "+${item.bonusAttack} Atk ⚔️"
-                                item.bonusDefense > 0 -> "+${item.bonusDefense} Def 🛡️"
-                                else -> "+${item.bonusHp} HP ❤️"
+        // FLOATING DRAGGED PREVIEW NODE
+        val floatingItem = activeDraggingItem ?: activeDraggingEquippedItem
+        if (floatingItem != null) {
+            Box(
+                modifier = Modifier
+                    .offset(
+                        x = (currentPointerPosition.x / density.density).dp - 36.dp,
+                        y = (currentPointerPosition.y / density.density).dp - 36.dp
+                    )
+                    .size(72.dp)
+                    .graphicsLayer {
+                        scaleX = 1.15f
+                        scaleY = 1.15f
+                        alpha = 0.90f
+                        shadowElevation = 8.dp.toPx()
+                    }
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF231F1D))
+                    .border(2.dp, getRarityColor(floatingItem.rarity), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                val emoji = when (floatingItem.type) {
+                    "WEAPON" -> "⚔️"
+                    "SHIELD" -> "🛡️"
+                    "HELMET" -> "👑"
+                    else -> "🥋"
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(emoji, fontSize = 24.sp)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = floatingItem.name.split(" ").firstOrNull() ?: "",
+                        fontSize = 8.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EquipmentDollSlot(
+    type: String,
+    equippedItems: List<ItemEntity>,
+    slotBounds: SnapshotStateMap<String, Rect>,
+    parentCoordinates: LayoutCoordinates?,
+    activeDraggingItem: ItemEntity?,
+    currentHoveredSlot: String?,
+    onEquip: (ItemEntity) -> Unit,
+    onUnequip: (ItemEntity) -> Unit,
+    onSelect: (ItemEntity) -> Unit,
+    onEquipActiveDrag: (ItemEntity?) -> Unit,
+    onEquipDragStart: (ItemEntity, Offset) -> Unit,
+    onEquipDrag: (Offset) -> Unit,
+    onEquipDragEnd: (ItemEntity) -> Unit
+) {
+    val equipped = equippedItems.find { it.type == type }
+    val slotKey = "${type}_SLOT"
+
+    val isCompatibleDrag = activeDraggingItem != null && activeDraggingItem.type == type
+    val isCurrentlyHovered = currentHoveredSlot == slotKey
+
+    val borderGlow by animateColorAsState(
+        targetValue = when {
+            isCurrentlyHovered -> EmberGold
+            isCompatibleDrag -> CosmicTeal.copy(alpha = 0.8f)
+            equipped != null -> getRarityColor(equipped.rarity)
+            else -> Color(0xFF382A25)
+        },
+        animationSpec = tween(durationMillis = 150),
+        label = "BorderGlowColor"
+    )
+
+    val scaleScale by animateFloatAsState(
+        targetValue = if (isCurrentlyHovered) 1.12f else 1.0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "GlowScale"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(72.dp)
+            .graphicsLayer {
+                scaleX = scaleScale
+                scaleY = scaleScale
+            }
+            .onGloballyPositioned { coords ->
+                parentCoordinates?.let { parent ->
+                    if (coords.isAttached && parent.isAttached) {
+                        slotBounds[slotKey] = parent.localBoundingBoxOf(coords)
+                    }
+                }
+            }
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isCurrentlyHovered) Color(0xFF2C221F) else Color(0xD90E0C0B))
+            .border(
+                width = if (isCurrentlyHovered) 2.dp else 1.dp,
+                color = borderGlow,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .clickable(enabled = equipped != null) {
+                if (equipped != null) onSelect(equipped)
+            }
+            .then(
+                if (equipped != null) {
+                    Modifier.pointerInput(equipped) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                onEquipDragStart(equipped, offset)
+                            },
+                            onDrag = { change, amount ->
+                                onEquipDrag(amount)
+                                change.consume()
+                            },
+                            onDragEnd = {
+                                onEquipDragEnd(equipped)
+                            },
+                            onDragCancel = {
+                                onEquipDragEnd(equipped)
                             }
-                            Text(statText, color = EmberGold, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        )
+                    }
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (equipped != null) {
+            // Display equipped item
+            val color = getRarityColor(equipped.rarity)
+            Column(
+                modifier = Modifier.padding(4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                val emoji = when (type) {
+                    "WEAPON" -> "⚔️"
+                    "SHIELD" -> "🛡️"
+                    "HELMET" -> "👑"
+                    else -> "🥋"
+                }
+
+                Text(emoji, fontSize = 22.sp)
+                Spacer(modifier = Modifier.height(1.dp))
+                Text(
+                    text = equipped.name.split(" ").firstOrNull() ?: equipped.name,
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = equipped.rarity,
+                    color = color,
+                    fontSize = 7.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        } else {
+            // Draw empty canvas outline
+            Box(modifier = Modifier.fillMaxSize()) {
+                when (type) {
+                    "WEAPON" -> WeaponCanvas()
+                    "SHIELD" -> ShieldCanvas()
+                    "HELMET" -> HelmetCanvas()
+                    "CHEST" -> ChestCanvas()
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 3.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = type,
+                        color = if (isCompatibleDrag) CosmicTeal else Color.Gray,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun WeaponCanvas() {
+    Canvas(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        val w = size.width
+        val h = size.height
+        drawLine(
+            color = Color.Gray.copy(alpha = 0.35f),
+            start = Offset(w / 2f, h * 0.15f),
+            end = Offset(w / 2f, h * 0.70f),
+            strokeWidth = 3.dp.toPx()
+        )
+        drawLine(
+            color = Color.Gray.copy(alpha = 0.35f),
+            start = Offset(w * 0.30f, h * 0.70f),
+            end = Offset(w * 0.70f, h * 0.70f),
+            strokeWidth = 2.dp.toPx()
+        )
+        drawLine(
+            color = Color.Gray.copy(alpha = 0.35f),
+            start = Offset(w / 2f, h * 0.70f),
+            end = Offset(w / 2f, h * 0.85f),
+            strokeWidth = 3.dp.toPx()
+        )
+        drawCircle(
+            color = Color.Gray.copy(alpha = 0.35f),
+            radius = 3.dp.toPx(),
+            center = Offset(w / 2f, h * 0.85f)
+        )
+    }
+}
+
+@Composable
+fun ShieldCanvas() {
+    Canvas(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        val w = size.width
+        val h = size.height
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.25f, h * 0.15f)
+            lineTo(w * 0.75f, h * 0.15f)
+            lineTo(w * 0.75f, h * 0.50f)
+            quadraticTo(w * 0.75f, h * 0.80f, w * 0.50f, h * 0.95f)
+            quadraticTo(w * 0.25f, h * 0.80f, w * 0.25f, h * 0.50f)
+            close()
+        }
+        drawPath(
+            path = path,
+            color = Color.Gray.copy(alpha = 0.35f),
+            style = CanvasStroke(width = 1.8.dp.toPx())
+        )
+        drawLine(
+            color = Color.Gray.copy(alpha = 0.22f),
+            start = Offset(w * 0.50f, h * 0.15f),
+            end = Offset(w * 0.50f, h * 0.95f),
+            strokeWidth = 1.dp.toPx()
+        )
+        drawLine(
+            color = Color.Gray.copy(alpha = 0.22f),
+            start = Offset(w * 0.25f, h * 0.45f),
+            end = Offset(w * 0.75f, h * 0.45f),
+            strokeWidth = 1.dp.toPx()
+        )
+    }
+}
+
+@Composable
+fun HelmetCanvas() {
+    Canvas(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        val w = size.width
+        val h = size.height
+        drawArc(
+            color = Color.Gray.copy(alpha = 0.35f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(w * 0.20f, h * 0.20f),
+            size = androidx.compose.ui.geometry.Size(w * 0.60f, h * 0.60f),
+            style = CanvasStroke(width = 1.8.dp.toPx())
+        )
+        drawLine(color = Color.Gray.copy(alpha = 0.35f), start = Offset(w * 0.20f, h * 0.50f), end = Offset(w * 0.28f, h * 0.85f), strokeWidth = 1.8.dp.toPx())
+        drawLine(color = Color.Gray.copy(alpha = 0.35f), start = Offset(w * 0.80f, h * 0.50f), end = Offset(w * 0.72f, h * 0.85f), strokeWidth = 1.8.dp.toPx())
+        drawLine(color = Color.Gray.copy(alpha = 0.28f, h * 0.85f), start = Offset(w * 0.28f, h * 0.85f), end = Offset(w * 0.72f, h * 0.85f), strokeWidth = 1.8.dp.toPx())
+        drawLine(color = Color.Gray.copy(alpha = 0.35f), start = Offset(w * 0.30f, h * 0.45f), end = Offset(w * 0.70f, h * 0.45f), strokeWidth = 3.dp.toPx())
+    }
+}
+
+@Composable
+fun ChestCanvas() {
+    Canvas(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        val w = size.width
+        val h = size.height
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * 0.35f, h * 0.15f)
+            lineTo(w * 0.65f, h * 0.15f)
+            lineTo(w * 0.80f, h * 0.25f)
+            lineTo(w * 0.75f, h * 0.50f)
+            lineTo(w * 0.70f, h * 0.85f)
+            lineTo(w * 0.30f, h * 0.85f)
+            lineTo(w * 0.25f, h * 0.50f)
+            lineTo(w * 0.20f, h * 0.25f)
+            close()
+        }
+        drawPath(
+            path = path,
+            color = Color.Gray.copy(alpha = 0.35f),
+            style = CanvasStroke(width = 1.8.dp.toPx())
+        )
+        drawLine(color = Color.Gray.copy(alpha = 0.22f), start = Offset(w * 0.32f, h * 0.40f), end = Offset(w * 0.68f, h * 0.40f), strokeWidth = 1.2.dp.toPx())
+        drawLine(color = Color.Gray.copy(alpha = 0.22f), start = Offset(w * 0.31f, h * 0.60f), end = Offset(w * 0.69f, h * 0.60f), strokeWidth = 1.2.dp.toPx())
+    }
+}
+
+@Composable
+fun InventoryComparePane(
+    compareItem: ItemEntity,
+    equippedItems: List<ItemEntity>,
+    onEquip: (ItemEntity) -> Unit,
+    onUnequip: (ItemEntity) -> Unit,
+    onSell: (ItemEntity) -> Unit,
+    onClose: () -> Unit
+) {
+    val currentEquipped = equippedItems.find { it.type == compareItem.type }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = DarkSlate,
+        border = BorderStroke(1.5.dp, getRarityColor(compareItem.rarity))
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        compareItem.rarity,
+                        color = getRarityColor(compareItem.rarity),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.sp
+                    )
+                    Text(compareItem.name, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close Specs", tint = Color.LightGray, modifier = Modifier.size(16.dp))
+                }
+            }
+
+            Text(
+                text = compareItem.description,
+                color = Color.LightGray,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(vertical = 3.dp)
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp), color = Color(0xFF382A25))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("SELECTED PIECE STATS:", fontSize = 10.sp, color = EmberGold, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    if (compareItem.bonusAttack > 0) Text("+${compareItem.bonusAttack} Attack ⚔️", color = Color.White, fontSize = 12.sp)
+                    if (compareItem.bonusDefense > 0) Text("+${compareItem.bonusDefense} Defense 🛡️", color = Color.White, fontSize = 12.sp)
+                    if (compareItem.bonusHp > 0) Text("+${compareItem.bonusHp} Max HP ❤️", color = Color.White, fontSize = 12.sp)
+                    if (compareItem.bonusCrit > 0) Text("+${compareItem.bonusCrit}% Critical Strike ✨", color = Color.White, fontSize = 12.sp)
+                    if (compareItem.dodgeChance > 0) Text("+${compareItem.dodgeChance}% Dodge Chance 💨", color = Color.White, fontSize = 12.sp)
+                    if (compareItem.elementalResist > 0) Text("+${compareItem.elementalResist} Elemental Resist 🧪", color = Color.White, fontSize = 12.sp)
+                }
+
+                if (currentEquipped != null) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("COMPARED TO EQUIPPED:", fontSize = 10.sp, color = Color.LightGray.copy(0.6f), fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        Text(currentEquipped.name, color = Color.Gray, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        
+                        val atkDiff = compareItem.bonusAttack - currentEquipped.bonusAttack
+                        if (atkDiff != 0) {
+                            Text(
+                                text = "${if (atkDiff > 0) "+" else ""}$atkDiff Attack",
+                                color = if (atkDiff > 0) CosmicTeal else CrimsonRed,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
                         }
+
+                        val defDiff = compareItem.bonusDefense - currentEquipped.bonusDefense
+                        if (defDiff != 0) {
+                            Text(
+                                text = "${if (defDiff > 0) "+" else ""}$defDiff Defense",
+                                color = if (defDiff > 0) CosmicTeal else CrimsonRed,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        val hpDiff = compareItem.bonusHp - currentEquipped.bonusHp
+                        if (hpDiff != 0) {
+                            Text(
+                                text = "${if (hpDiff > 0) "+" else ""}$hpDiff Max HP",
+                                color = if (hpDiff > 0) CosmicTeal else CrimsonRed,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                } else {
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        Text("No gear currently equipped in this slot.", color = Color.Gray, fontSize = 10.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        if (compareItem.isEquipped) {
+                            onUnequip(compareItem)
+                        } else {
+                            onEquip(compareItem)
+                        }
+                        onClose()
+                    },
+                    modifier = Modifier.weight(1.2f).testTag("specs_equip_btn"),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = EmberGold)
+                ) {
+                    Text(text = if (compareItem.isEquipped) "UNEQUIP" else "EQUIP PIECE", color = ShadowBlack, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+                }
+
+                Button(
+                    onClick = {
+                        onSell(compareItem)
+                        onClose()
+                    },
+                    modifier = Modifier.weight(1f).testTag("specs_sell_btn"),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF382A25))
+                ) {
+                    Text("SELL (+${compareItem.purchaseGoldValue}g)", color = EmberGold, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun InventoryStatsPane(
+    player: PlayerStateEntity,
+    equippedItems: List<ItemEntity>,
+    allItems: List<ItemEntity>
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0x7F1C1B1F),
+        border = BorderStroke(1.dp, Color(0xFF2E2421))
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                "EQUIPMENT ATTRIBUTE MATRIX",
+                color = EmberGold,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+
+            val totalAtk = equippedItems.sumOf { it.bonusAttack }
+            val totalDef = equippedItems.sumOf { it.bonusDefense }
+            val totalHp = equippedItems.sumOf { it.bonusHp }
+            val totalCrit = equippedItems.sumOf { it.bonusCrit }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("⚔️ Total Atk: +$totalAtk", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("🛡️ Total Def: +$totalDef", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Column {
+                    Text("❤️ Stats HP: +$totalHp", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("✨ Strike Crit: +$totalCrit%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("CAPACITY", color = Color.Gray, fontSize = 9.sp)
+                    Text("${allItems.size} / 25 items", color = if (allItems.size >= 22) CrimsonRed else Color.LightGray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun BackpackItemsGrid(
+    items: List<ItemEntity>,
+    selectedItem: ItemEntity?,
+    onItemClick: (ItemEntity) -> Unit,
+    activeDraggingItem: ItemEntity?,
+    slotBounds: SnapshotStateMap<String, Rect>,
+    parentCoordinates: LayoutCoordinates?,
+    onDragStart: (ItemEntity, Offset) -> Unit,
+    onDrag: (change: androidx.compose.ui.input.pointer.PointerInputChange, dragAmount: Offset) -> Unit,
+    onDragEnd: (ItemEntity) -> Unit
+) {
+    if (items.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Image(
+                    painter = painterResource(id = com.example.R.drawable.img_leather_backpack_1781169577737),
+                    contentDescription = "Empty Adventurer's Knapsack",
+                    modifier = Modifier.size(110.dp).clip(RoundedCornerShape(8.dp))
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "YOUR BACKPACK IS EMPTY",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Conquer deeper dungeon chambers to discover procedurally rolled magic, rare, and legendary artifacts!",
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                )
+            }
+        }
+    } else {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 74.dp),
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(items) { item ->
+                val color = getRarityColor(item.rarity)
+                val itemKey = item.id.toString()
+
+                val isDragActive = activeDraggingItem?.id == item.id
+
+                Surface(
+                    modifier = Modifier
+                        .aspectRatio(1f)
+                        .graphicsLayer {
+                            alpha = if (isDragActive) 0.35f else 1f
+                            scaleX = if (isDragActive) 0.9f else 1.0f
+                            scaleY = if (isDragActive) 0.9f else 1.0f
+                        }
+                        .onGloballyPositioned { coords ->
+                            parentCoordinates?.let { parent ->
+                                if (coords.isAttached && parent.isAttached) {
+                                    slotBounds[itemKey] = parent.localBoundingBoxOf(coords)
+                                }
+                            }
+                        }
+                        .pointerInput(item) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { offset ->
+                                    onDragStart(item, offset)
+                                },
+                                onDrag = { change, amount ->
+                                    onDrag(change, amount)
+                                    change.consume()
+                                },
+                                onDragEnd = {
+                                    onDragEnd(item)
+                                },
+                                onDragCancel = {
+                                    onDragEnd(item)
+                                }
+                            )
+                        }
+                        .clickable { onItemClick(item) },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (selectedItem?.id == item.id) Color(0xFF2B221E) else Color(0xCC1A1817),
+                    border = BorderStroke(
+                        width = if (selectedItem?.id == item.id) 2.dp else 1.dp,
+                        color = if (selectedItem?.id == item.id) EmberGold else (if (item.isEquipped) CosmicTeal else Color(0xFF322723))
+                    )
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        val emoji = when (item.type) {
+                            "WEAPON" -> "⚔️"
+                            "SHIELD" -> "🛡️"
+                            "HELMET" -> "👑"
+                            else -> "🥋"
+                        }
+                        
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(emoji, fontSize = 24.sp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = item.name.split(" ").firstOrNull() ?: item.name,
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (item.isEquipped) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .clip(RoundedCornerShape(bottomStart = 6.dp))
+                                    .background(CosmicTeal)
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text("E", color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(5.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(color)
+                        )
                     }
                 }
             }
@@ -1978,7 +3174,8 @@ fun BattleOverlay(
     onDodge: () -> Unit,
     onShieldBlock: () -> Unit,
     onWeaponSwitch: () -> Unit,
-    onFlee: () -> Unit
+    onFlee: () -> Unit,
+    playerClass: String = "Knight"
 ) {
     val skillSet = remember(playerUnlockedSkills) {
         playerUnlockedSkills.split(",").filter { it.isNotEmpty() }.toSet()
@@ -2076,7 +3273,8 @@ fun BattleOverlay(
                     enemyEmoji = enemyEmojiForName(battleState.enemy.name),
                     playerCurrentHp = battleState.playerCurrentHp,
                     enemyCurrentHp = battleState.enemyCurrentHp,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    playerClass = playerClass
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -2166,22 +3364,24 @@ fun BattleOverlay(
                     ) {
                         Button(
                             onClick = onComboSlash,
-                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonRed),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (playerClass.lowercase() == "shinobi") Color(0xFFFF9100) else CrimsonRed),
                             modifier = Modifier.weight(1f).height(44.dp).testTag("action_combo"),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text("SLASH [x${battleState.currentComboCount}]", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            val label = if (playerClass.lowercase() == "shinobi") "RASENGAN [x${battleState.currentComboCount}] 🌀" else "SLASH [x${battleState.currentComboCount}]"
+                            Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
 
                         Button(
                             onClick = onChargedAttack,
-                            colors = ButtonDefaults.buttonColors(containerColor = SpectralViolet),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (playerClass.lowercase() == "shinobi") Color(0xFFE040FB) else SpectralViolet),
                             modifier = Modifier.weight(1f).height(44.dp).testTag("action_charged"),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text("CHARGE [${battleState.chargeStrikePercent}%]", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            val label = if (playerClass.lowercase() == "shinobi") "CHAKRA BLAST [${battleState.chargeStrikePercent}%] ⚡" else "CHARGE [${battleState.chargeStrikePercent}%]"
+                            Text(label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
 
                         Button(
@@ -2190,10 +3390,14 @@ fun BattleOverlay(
                             modifier = Modifier.weight(1.2f).height(44.dp).testTag("action_weapon_switch"),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp),
-                            border = BorderStroke(1.dp, EmberGold)
+                            border = BorderStroke(1.dp, if (playerClass.lowercase() == "shinobi") Color(0xFFFF9100) else EmberGold)
                         ) {
-                            val name = if (battleState.activeWeaponSlot == 0) "🗡️ DAGGERS" else "⚔️ GREATSWORD"
-                            Text(name, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = EmberGold)
+                            val name = if (playerClass.lowercase() == "shinobi") {
+                                if (battleState.activeWeaponSlot == 0) "👥 SINGLE CLONE" else "👥 MULTI CLONES"
+                            } else {
+                                if (battleState.activeWeaponSlot == 0) "🗡️ DAGGERS" else "⚔️ GREATSWORD"
+                            }
+                            Text(name, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = if (playerClass.lowercase() == "shinobi") Color(0xFFFF9100) else EmberGold)
                         }
                     }
 
@@ -2205,12 +3409,17 @@ fun BattleOverlay(
                     ) {
                         Button(
                             onClick = onShieldBlock,
-                            colors = ButtonDefaults.buttonColors(containerColor = if (battleState.shieldActive) LegendOrange else CrimsonRed),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (battleState.shieldActive) LegendOrange else (if (playerClass.lowercase() == "shinobi") Color(0xFF8D6E63) else CrimsonRed)),
                             modifier = Modifier.weight(1.2f).height(40.dp).testTag("action_shield"),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text(if (battleState.shieldActive) "SLOT LOCKED" else "GUARD BLOCK 🛡️", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            val label = if (playerClass.lowercase() == "shinobi") {
+                                if (battleState.shieldActive) "COOLDOWN" else "SUBSTITUTION 🪵"
+                            } else {
+                                if (battleState.shieldActive) "SLOT LOCKED" else "GUARD BLOCK 🛡️"
+                            }
+                            Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -2220,7 +3429,12 @@ fun BattleOverlay(
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text(if (battleState.dodgeActive) "DODGE READY" else "DODGE ROLL 💨", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            val label = if (playerClass.lowercase() == "shinobi") {
+                                if (battleState.dodgeActive) "FLICKER ACTIVE" else "SHUNSHIN 💨"
+                            } else {
+                                if (battleState.dodgeActive) "DODGE READY" else "DODGE ROLL 💨"
+                            }
+                            Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -2230,7 +3444,8 @@ fun BattleOverlay(
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(0.dp)
                         ) {
-                            Text("RUN/FLEE 🏃", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            val label = if (playerClass.lowercase() == "shinobi") "SUMMON FLEE 🐸" else "RUN/FLEE 🏃"
+                            Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
 
@@ -2298,11 +3513,11 @@ fun BattleOverlay(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             "MONSTER DROP UNLOCKED!",
-                                            color = LegendOrange,
-                                            fontSize = 9.sp,
+                                            color = getRarityColor(item.rarity),
+                                            fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold
                                         )
                                         Text(item.name, color = Color.White, fontWeight = FontWeight.Bold)
@@ -2437,6 +3652,8 @@ fun ChestDropModal(
                     if (item.bonusDefense > 0) Text("Defense Protection: +${item.bonusDefense} 🛡️", color = Color.White, fontWeight = FontWeight.Bold)
                     if (item.bonusHp > 0) Text("Structure Health: +${item.bonusHp} HP ❤️", color = Color.White, fontWeight = FontWeight.Bold)
                     if (item.bonusCrit > 0) Text("Critical Strike: +${item.bonusCrit}% ✨", color = Color.White, fontWeight = FontWeight.Bold)
+                    if (item.dodgeChance > 0) Text("Dodge Chance: +${item.dodgeChance}% 💨", color = Color.White, fontWeight = FontWeight.Bold)
+                    if (item.elementalResist > 0) Text("Elemental Resist: +${item.elementalResist} 🧪", color = Color.White, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -2479,6 +3696,7 @@ fun getRarityColor(rarity: String): Color {
         Rarity.EPIC.name -> SpectralViolet
         Rarity.RARE.name -> RareBlue
         Rarity.UNCOMMON.name -> CosmicTeal
+        Rarity.MAGIC.name -> Color(0xFF00E5FF) // Vibrant Magic Cyan
         else -> NormalGray
     }
 }
@@ -3092,7 +4310,8 @@ fun DungeonTileContent(
     flickerAlpha: Float,
     pulseScale: Float,
     playerClass: String,
-    enemies: List<Enemy>
+    enemies: List<Enemy>,
+    narutoAnimState: String = "idle"
 ) {
     val contextColor = when {
         !cell.isRevealed -> Color(0xFF050404)
@@ -3323,14 +4542,22 @@ fun DungeonTileContent(
                     modifier = animModifier,
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = cellEmoji,
-                        fontSize = when {
-                            isPlayer -> 14.sp
-                            cell.type == TileType.BOSS -> 16.sp
-                            else -> 13.sp
-                        }
-                    )
+                    if (isPlayer && playerClass.lowercase() == "shinobi") {
+                        NarutoShinobiSprite(
+                            animState = narutoAnimState,
+                            modifier = Modifier.size(24.dp),
+                            scaleFactor = 0.58f
+                        )
+                    } else {
+                        Text(
+                            text = cellEmoji,
+                            fontSize = when {
+                                isPlayer -> 14.sp
+                                cell.type == TileType.BOSS -> 16.sp
+                                else -> 13.sp
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -3418,6 +4645,7 @@ fun playerIconForClass(characterClass: String): String {
         "mage" -> "🧙"
         "ranger" -> "🏹"
         "rogue" -> "🗡️"
+        "shinobi" -> "🥷"
         else -> "⚔️" // Default Knight
     }
 }
@@ -3428,7 +4656,8 @@ fun BattleClashGraphic(
     enemyEmoji: String,
     playerCurrentHp: Int,
     enemyCurrentHp: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playerClass: String = "Knight"
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "clash")
     
@@ -3485,13 +4714,26 @@ fun BattleClashGraphic(
             Box(
                 modifier = Modifier
                     .offset(x = playerOffset.dp)
-                    .size(50.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (playerCurrentHp <= 0) Color.DarkGray else Color(0x3300FFCC))
-                    .border(1.dp, Color(0xFF00FFCC), RoundedCornerShape(8.dp)),
+                    .size(52.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(if (playerCurrentHp <= 0) "🛡️" else "⚔️", fontSize = 26.sp)
+                if (playerClass.lowercase() == "shinobi" && playerCurrentHp > 0) {
+                    NarutoShinobiSprite(
+                        animState = "fighting",
+                        modifier = Modifier.size(50.dp)
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (playerCurrentHp <= 0) Color.DarkGray else Color(0x3300FFCC))
+                            .border(1.dp, Color(0xFF00FFCC), RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(if (playerCurrentHp <= 0) "🛡️" else "⚔️", fontSize = 26.sp)
+                    }
+                }
             }
 
             // Contact Spark
@@ -3519,4 +4761,339 @@ fun BattleClashGraphic(
         }
     }
 }
+
+// 8. RICH ANIMATED NARUTO SHINOBI SPRITE ENGINE (Exclusive for theme & requested features!)
+@Composable
+fun NarutoShinobiSprite(
+    animState: String, // "idle", "running", "collecting", "fighting", "powerup"
+    modifier: Modifier = Modifier,
+    scaleFactor: Float = 1f
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "naruto_effects")
+    
+    // Animate rhythmic vertical floating bob, pulse scaling, and rotation
+    val idleBob by infiniteTransition.animateFloat(
+        initialValue = -3.5f,
+        targetValue = 3.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(650, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "naruto_idle_bob"
+    )
+    
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "naruto_pulse"
+    )
+    
+    val chakraRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "naruto_chakra_rot"
+    )
+
+    val shadowClonesOffset by infiniteTransition.animateFloat(
+        initialValue = -8f,
+        targetValue = 8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(300, easing = FastOutLinearInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "naruto_clones"
+    )
+
+    Box(
+        modifier = modifier.scale(scaleFactor),
+        contentAlignment = Alignment.Center
+    ) {
+        // A. BACKGROUND PROCEDURAL EFFECTS DEPENDING ON ACTIVE STATE
+        when (animState) {
+            "powerup" -> {
+                // Glow fiery orange aura representing Fox Chakra Mode
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .scale(1.3f)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFFFFB300).copy(alpha = 0.75f),
+                                    Color(0xFFFF5722).copy(alpha = 0.3f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+                
+                // Draw rising chakra particles
+                Canvas(modifier = Modifier.fillMaxSize().scale(1.2f)) {
+                    val w = size.width
+                    val h = size.height
+                    val ms = System.currentTimeMillis()
+                    for (i in 0 until 8) {
+                        val seed = (i * 47)
+                        val angle = (ms / 300f + seed) % (2f * java.lang.Math.PI)
+                        val r = (w * 0.45f) * ((ms + seed) % 2000 / 2000f)
+                        val x = w / 2 + r * java.lang.Math.cos(angle).toFloat()
+                        val y = h / 2 + r * java.lang.Math.sin(angle).toFloat() - (i * 2).dp.toPx()
+                        
+                        drawCircle(
+                            color = Color(0xFFFF9100),
+                            radius = (1.5f + (i % 2)).dp.toPx(),
+                            center = Offset(x, y)
+                        )
+                    }
+                }
+            }
+            "collecting" -> {
+                // Swirling Rasengan sphere background 
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .rotate(chakraRotation)
+                        .scale(1.15f)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFF00E5FF).copy(alpha = 0.8f),
+                                    Color(0xFF2979FF).copy(alpha = 0.25f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+            }
+            "running" -> {
+                // Run sweep velocity trails
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    val waveY = (System.currentTimeMillis() % 600) / 600f
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.4f),
+                        start = Offset(0f, h * 0.8f),
+                        end = Offset(w * waveY, h * 0.8f),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.25f),
+                        start = Offset(w * (1f - waveY), h * 0.9f),
+                        end = Offset(w, h * 0.9f),
+                        strokeWidth = 0.8f.dp.toPx()
+                    )
+                }
+            }
+            "fighting" -> {
+                // Clashing chakra and duplicate clone backdrops
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .scale(1.1f)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFFFF5252).copy(alpha = 0.4f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+                // Render shadow clones left and right
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.img_naruto_avatar_1781168071390),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .offset(x = (shadowClonesOffset - 12).dp)
+                        .scale(0.8f),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(0xE62979FF), androidx.compose.ui.graphics.BlendMode.SrcAtop),
+                    alpha = 0.45f
+                )
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.img_naruto_avatar_1781168071390),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .offset(x = (-shadowClonesOffset + 12).dp)
+                        .scale(0.8f),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(0xE6FF5722), androidx.compose.ui.graphics.BlendMode.SrcAtop),
+                    alpha = 0.45f
+                )
+            }
+            else -> {}
+        }
+
+        // B. CHARACTER SPRITE LAYOUT WITH SPECIFFIC MOVEMENT TRANSFORMS
+        val spriteModifier = when (animState) {
+            "running" -> {
+                Modifier
+                    .size(46.dp)
+                    .rotate(-15f) // Naruto Running Forward!
+                    .offset(x = 1.5.dp, y = idleBob.dp * 0.5f)
+            }
+            "collecting" -> {
+                Modifier
+                    .size(48.dp)
+                    .offset(y = (idleBob * 1.5f - 4f).dp) // Happy hop bounds!
+                    .scale(1.1f)
+            }
+            "fighting" -> {
+                Modifier
+                    .size(48.dp)
+                    .offset(x = shadowClonesOffset.dp * 0.3f, y = (idleBob * 0.4f).dp)
+                    .scale(pulseScale)
+            }
+            "powerup" -> {
+                Modifier
+                    .size(48.dp)
+                    .offset(y = (idleBob * 1.2f).dp)
+                    .scale(1.08f)
+            }
+            else -> { // "idle"
+                Modifier
+                    .size(46.dp)
+                    .offset(y = idleBob.dp)
+            }
+        }
+
+        Image(
+            painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.img_naruto_avatar_1781168071390),
+            contentDescription = "Naruto Uzumaki Shinobi",
+            modifier = spriteModifier
+        )
+
+        // C. FOREGROUND DECORATIVE JUTSU SHAPES
+        when (animState) {
+            "powerup" -> {
+                Canvas(modifier = Modifier.size(54.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    drawCircle(
+                        color = Color(0xFFF77F00),
+                        radius = (w / 2) * (0.8f + (System.currentTimeMillis() % 1000 / 1000f) * 0.2f),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f.dp.toPx()),
+                        center = Offset(w / 2, h / 2)
+                    )
+                }
+            }
+            "collecting" -> {
+                Canvas(modifier = Modifier.size(44.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    val rad = (w / 2) * 0.7f
+                    val ms = System.currentTimeMillis()
+                    val rot = (ms / 150f) % (2f * java.lang.Math.PI)
+                    val endX = w / 2 + rad * java.lang.Math.cos(rot).toFloat()
+                    val endY = h / 2 + rad * java.lang.Math.sin(rot).toFloat()
+                    
+                    drawLine(
+                        color = Color(0xFF00E5FF),
+                        start = Offset(w / 2, h / 2),
+                        end = Offset(endX, endY),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
+            }
+            "fighting" -> {
+                Text(
+                    text = "💥",
+                    fontSize = 18.sp,
+                    modifier = Modifier
+                        .offset(x = (shadowClonesOffset * 0.8f).dp, y = (-12).dp)
+                        .scale(0.85f)
+                )
+            }
+            else -> {}
+        }
+    }
+}
+
+@Composable
+fun RoomDiscoveryBanner(
+    room: com.example.data.DungeonRoom,
+    onDismiss: () -> Unit
+) {
+    LaunchedEffect(room.id) {
+        delay(3500)
+        onDismiss()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 90.dp, start = 12.dp, end = 12.dp),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .clickable { onDismiss() }
+                .testTag("room_discover_banner_card"),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.5.dp, Color(0xFFFFB300)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xF20F0D0C))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFE53935).copy(alpha = 0.15f))
+                        .border(1.dp, Color(0xFFE53935), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("📍", fontSize = 16.sp)
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "NEW CHAMBER REVEALED",
+                        color = Color(0xFFFFB300),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = room.name,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = "Area: ${room.w}x${room.h} Matrix Region",
+                        color = Color.Gray,
+                        fontSize = 10.sp
+                    )
+                }
+
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Dismiss",
+                    tint = Color.LightGray,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
 

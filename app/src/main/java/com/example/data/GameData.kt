@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 // Enums for standard RPG variables
 enum class Rarity {
-    COMMON, UNCOMMON, RARE, EPIC, LEGENDARY
+    COMMON, UNCOMMON, MAGIC, RARE, EPIC, LEGENDARY
 }
 
 enum class ItemType {

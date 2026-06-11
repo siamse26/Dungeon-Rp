@@ -261,6 +261,28 @@ class DungeonGenerator {
             }
         }
 
+        val roomNames = when (stageId) {
+            1 -> listOf("Gilded Crypt Treasury", "Forgotten Undead Archives", "Iron Sentry Guardroom", "Fallen Hero Mausoleum", "Alchemist's Ossuary")
+            2 -> listOf("Molten Forge Chambers", "Sulfur Magma Pools", "Volcano Core Keep", "Ashen Torture Pit", "Abyssal Hatchery")
+            else -> listOf("Aetherial Cloud Reliquary", "Dawn Choir Sanctuary", "Citadel Armory Deck", "Solaris Throne Vestibule", "Starlight Codex Library")
+        }.shuffled().toMutableList()
+
+        val roomsList = rooms.mapIndexed { idx, rm ->
+            val name = when {
+                idx == 0 -> "Entry Haven Portal"
+                idx == rooms.size - 1 -> if (isBossFloor) "Abyssal Boss Lair" else "Stairwell Chamber"
+                else -> if (roomNames.isNotEmpty()) roomNames.removeAt(0) else "Deep Chamber Hall ${idx + 1}"
+            }
+            DungeonRoom(
+                name = name,
+                x = rm.x,
+                y = rm.y,
+                w = rm.w,
+                h = rm.h,
+                isDiscovered = (idx == 0)
+            )
+        }
+
         return DungeonLevel(
             stageId = stageId,
             floor = floorNum,
@@ -269,7 +291,8 @@ class DungeonGenerator {
             height = height,
             enemies = enemies,
             playerRow = startY,
-            playerCol = startX
+            playerCol = startX,
+            rooms = roomsList
         )
     }
 
@@ -287,6 +310,16 @@ class DungeonGenerator {
     }
 }
 
+data class DungeonRoom(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String,
+    val x: Int,
+    val y: Int,
+    val w: Int,
+    val h: Int,
+    var isDiscovered: Boolean = false
+)
+
 data class DungeonLevel(
     val stageId: Int,
     val floor: Int,
@@ -295,5 +328,19 @@ data class DungeonLevel(
     val height: Int,
     val enemies: List<Enemy>,
     var playerRow: Int,
-    var playerCol: Int
-)
+    var playerCol: Int,
+    val rooms: List<DungeonRoom> = emptyList()
+) {
+    fun updateRoomDiscovery(row: Int, col: Int): DungeonRoom? {
+        var newlyDiscovered: DungeonRoom? = null
+        for (room in rooms) {
+            if (col >= room.x && col < room.x + room.w && row >= room.y && row < room.y + room.h) {
+                if (!room.isDiscovered) {
+                    room.isDiscovered = true
+                    newlyDiscovered = room
+                }
+            }
+        }
+        return newlyDiscovered
+    }
+}
